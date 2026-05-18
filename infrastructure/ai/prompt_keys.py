@@ -64,6 +64,11 @@ MEMORY_EXTRACTION = "memory-extraction"
 PLANNING_QUICK_MACRO = "planning-quick-macro"
 PLANNING_ACT = "planning-act"
 PLANNING_MAIN_PLOT_SUGGEST = "planning-main-plot-suggest"
+UNIT_DRAMA_PLANNING = "unit-drama-planning"
+EXPANDED_OUTLINE_NODE_CARD = "expanded-outline-node-card"
+NODE_CARD_VALIDATION = "node-card-validation"
+BEAT_REALIZATION_VALIDATION = "beat-realization-validation"
+UNIT_DRAMA_VALIDATION = "unit-drama-validation"
 
 # ── Style / Voice ────────────────────────────────────────────────────────
 STYLE_ANALYSIS = "style-analysis"
@@ -135,6 +140,8 @@ ALL_KEYS: frozenset[str] = frozenset({
     MEMORY_EXTRACTION,
     # Planning
     PLANNING_QUICK_MACRO, PLANNING_ACT, PLANNING_MAIN_PLOT_SUGGEST,
+    UNIT_DRAMA_PLANNING, EXPANDED_OUTLINE_NODE_CARD,
+    NODE_CARD_VALIDATION, BEAT_REALIZATION_VALIDATION, UNIT_DRAMA_VALIDATION,
     # Style
     STYLE_ANALYSIS, VOICE_STYLE_ANALYSIS, VOICE_BASELINE_ANALYSIS,
     VOICE_REWRITE,

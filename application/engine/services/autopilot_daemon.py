@@ -30,6 +30,11 @@ from application.ai.llm_output_sanitize import strip_reasoning_artifacts
 from application.ai.prose_fragment_aggregator import aggregate_inline_prose_fragments
 from application.ai.llm_retry_policy import LLM_MAX_TOTAL_ATTEMPTS
 from application.workflows.beat_continuation import format_prior_draft_for_prompt
+from application.engine.services.expanded_outline_validators import (
+    BeatRealizationValidator,
+    UnitDramaValidator,
+)
+from application.engine.services.expanded_outline_trace_store import ExpandedOutlineTraceStore
 from domain.novel.value_objects.chapter_id import ChapterId
 from domain.novel.value_objects.word_count import WordCount
 from domain.novel.value_objects.generation_preferences import GenerationPreferences
@@ -50,6 +55,8 @@ def _coerce_word_count_to_int(wc: Any) -> int:
 VOICE_REWRITE_MAX_ATTEMPTS = LLM_MAX_TOTAL_ATTEMPTS
 VOICE_REWRITE_THRESHOLD = 0.68
 VOICE_WARNING_THRESHOLD_FALLBACK = 0.75
+BEAT_MIN_ACCEPT_RATIO = 0.65
+BEAT_REWRITE_MAX_ATTEMPTS = 2
 
 
 class AutopilotDaemon:
@@ -92,6 +99,9 @@ class AutopilotDaemon:
         # 章节"节拍耗尽但字数不足"重写计数器，key=(novel_id, chapter_num)
         # 防止清除重写陷入新的无限循环
         self._beat_exhausted_rewrite_count: Dict[tuple, int] = {}
+        self.beat_realization_validator = BeatRealizationValidator()
+        self.unit_drama_validator = UnitDramaValidator()
+        self.expanded_outline_trace_store = ExpandedOutlineTraceStore()
 
         # 惰性初始化 VolumeSummaryService
         if not self.volume_summary_service and llm_service and story_node_repo:
@@ -1556,6 +1566,7 @@ class AutopilotDaemon:
                 chapter_num, outline,
                 target_chapter_words=target_word_count,
                 beat_sheet=beat_sheet,  # 传递规划阶段的 BeatSheet
+                novel_id=novel.novel_id.value,
             )
 
         # ★ 子步骤状态：节拍拆分完成
@@ -1728,6 +1739,8 @@ class AutopilotDaemon:
             total_beats=len(beats),
             accumulated_content=existing_content,
         )
+        realized_beat_cards = []
+        beat_realization_results = []
 
         if beats:
             for i, beat in enumerate(beats):
@@ -1742,6 +1755,7 @@ class AutopilotDaemon:
                 # 🔥 节拍开始前，立即更新共享状态（前端实时看到当前节拍）
                 beat_focus = getattr(beat, 'focus', '') or ''
                 beat_target_words = getattr(beat, 'target_words', 0) or 0
+                beat_card = getattr(beat, "beat_card", None)
                 self._update_shared_state(
                     novel.novel_id.value,
                     current_beat_index=i,
@@ -1758,6 +1772,13 @@ class AutopilotDaemon:
                     beat_max_words_hint=int(signal.max_words_hint or 0),
                     beat_remaining_budget=int(signal.remaining_budget),
                     last_smart_truncate=None,
+                    current_unit_id=getattr(beat_card, "unit_id", "") if beat_card else "",
+                    current_node_card_title=getattr(beat_card, "title", "") if beat_card else "",
+                    current_node_card_function=getattr(beat_card, "function", "") if beat_card else "",
+                    current_node_card_action=getattr(beat_card, "active_action", "") if beat_card else "",
+                    current_node_card_feedback=getattr(beat_card, "external_feedback", "") if beat_card else "",
+                    current_node_card_info_delta=getattr(beat_card, "information_delta", "") if beat_card else "",
+                    last_node_validation=None,
                 )
 
                 if not self._is_still_running(novel):
@@ -1826,29 +1847,146 @@ class AutopilotDaemon:
                 if urgency_hint and not signal.beat_instruction:
                     beat_prompt = f"{urgency_hint}\n\n{beat_prompt}"
 
-                if use_wf:
-                    prompt = self.chapter_workflow.build_chapter_prompt(
-                        bundle["context"], outline,
-                        storyline_context=bundle["storyline_context"],
-                        plot_tension=bundle["plot_tension"],
-                        style_summary=bundle["style_summary"],
-                        beat_prompt=beat_prompt,
-                        beat_index=i, total_beats=len(beats),
-                        beat_target_words=int(adjusted_target),  # 使用调整后的目标
-                        voice_anchors=voice_anchors,
-                        chapter_draft_so_far=accumulated_content,
+                beat_content = ""
+                realization_result = None
+                for beat_attempt in range(0, BEAT_REWRITE_MAX_ATTEMPTS + 1):
+                    attempt_prompt = beat_prompt
+                    if beat_attempt > 0:
+                        attempt_prompt = (
+                            f"{beat_prompt}"
+                            f"{self._build_beat_depth_retry_hint(beat_content, int(adjusted_target), beat_attempt)}"
+                        )
+
+                    if use_wf:
+                        prompt = self.chapter_workflow.build_chapter_prompt(
+                            bundle["context"], outline,
+                            storyline_context=bundle["storyline_context"],
+                            plot_tension=bundle["plot_tension"],
+                            style_summary=bundle["style_summary"],
+                            beat_prompt=attempt_prompt,
+                            beat_index=i, total_beats=len(beats),
+                            beat_target_words=int(adjusted_target),
+                            voice_anchors=voice_anchors,
+                            chapter_draft_so_far=accumulated_content,
+                            beat_card=getattr(beat, "beat_card", None),
+                        )
+                        max_tokens = max(768, int(adjusted_target * 1.8))
+                        cfg = GenerationConfig(max_tokens=max_tokens, temperature=0.85)
+                        beat_content = await self._stream_llm_with_stop_watch(prompt, cfg, novel=novel)
+                    else:
+                        beat_content = await self._stream_one_beat(
+                            outline, context, attempt_prompt, beat,
+                            novel=novel, voice_anchors=voice_anchors,
+                            chapter_draft_so_far=accumulated_content,
+                        )
+
+                    realization_result = self._validate_beat_realization(
+                        beat,
+                        beat_content,
+                        int(adjusted_target),
+                        is_final_beat=bool(getattr(signal, "is_final_beat", False)),
                     )
-                    max_tokens = int(adjusted_target * 1.3)  # 使用调整后的目标
-                    cfg = GenerationConfig(max_tokens=max_tokens, temperature=0.85)
-                    beat_content = await self._stream_llm_with_stop_watch(prompt, cfg, novel=novel)
-                else:
-                    beat_content = await self._stream_one_beat(
-                        outline, context, beat_prompt, beat,
-                        novel=novel, voice_anchors=voice_anchors,
-                        chapter_draft_so_far=accumulated_content,
-                    )
+                    if realization_result.passed:
+                        self._update_shared_state(
+                            novel.novel_id.value,
+                            last_node_validation={
+                                "beat_index_1based": i + 1,
+                                "passed": True,
+                                "score": realization_result.score,
+                                "summary": realization_result.summary(),
+                            },
+                        )
+                        self.expanded_outline_trace_store.record_validation(
+                            novel_id=novel.novel_id.value,
+                            chapter_number=chapter_num,
+                            beat_index=i,
+                            stage="beat_realization",
+                            result=realization_result,
+                            extra={
+                                "beat_card": getattr(beat, "beat_card", None),
+                                "attempt": beat_attempt,
+                                "target_words": int(adjusted_target),
+                            },
+                        )
+                        break
+
+                    if beat_attempt < BEAT_REWRITE_MAX_ATTEMPTS and self._is_still_running(novel):
+                        logger.warning(
+                            f"[{novel.novel_id}] 节拍 {i + 1}/{len(beats)} 节点验收失败："
+                            f"{realization_result.summary()}，原位重写当前拍"
+                        )
+                        self._update_shared_state(
+                            novel.novel_id.value,
+                            writing_substep="node_validation_retry",
+                            writing_substep_label=f"节拍 {i+1}/{len(beats)} 节点验收重写",
+                            last_node_validation={
+                                "beat_index_1based": i + 1,
+                                "passed": False,
+                                "score": realization_result.score,
+                                "summary": realization_result.summary(),
+                                "attempt": beat_attempt + 1,
+                            },
+                        )
+                        self.expanded_outline_trace_store.record_validation(
+                            novel_id=novel.novel_id.value,
+                            chapter_number=chapter_num,
+                            beat_index=i,
+                            stage="beat_realization_retry",
+                            result=realization_result,
+                            extra={
+                                "beat_card": getattr(beat, "beat_card", None),
+                                "attempt": beat_attempt + 1,
+                                "target_words": int(adjusted_target),
+                            },
+                        )
+                        beat_prompt = (
+                            beat_prompt
+                            + self.beat_realization_validator.build_retry_hint(
+                                realization_result,
+                                getattr(beat, "beat_card", None),
+                            )
+                        )
+                    elif not realization_result.passed:
+                        logger.warning(
+                            f"[{novel.novel_id}] 节拍 {i + 1}/{len(beats)} 多轮原位重写后仍未完全通过："
+                            f"{realization_result.summary()}，不推进节点，等待下一轮继续重写"
+                        )
+                        self._update_shared_state(
+                            novel.novel_id.value,
+                            writing_substep="node_validation_failed",
+                            writing_substep_label=f"节拍 {i+1}/{len(beats)} 节点验收失败",
+                            last_node_validation={
+                                "beat_index_1based": i + 1,
+                                "passed": False,
+                                "score": realization_result.score,
+                                "summary": realization_result.summary(),
+                                "final": True,
+                            },
+                        )
+                        self.expanded_outline_trace_store.record_validation(
+                            novel_id=novel.novel_id.value,
+                            chapter_number=chapter_num,
+                            beat_index=i,
+                            stage="beat_realization_failed",
+                            result=realization_result,
+                            extra={
+                                "beat_card": getattr(beat, "beat_card", None),
+                                "target_words": int(adjusted_target),
+                            },
+                        )
+                        if accumulated_content.strip():
+                            await self._upsert_chapter_content(
+                                novel, next_chapter_node, accumulated_content, status="draft"
+                            )
+                        novel.current_beat_index = i
+                        novel.beats_completed = False
+                        self._flush_novel(novel)
+                        return
 
                 if beat_content.strip():
+                    if realization_result is not None and getattr(beat, "beat_card", None) is not None:
+                        realized_beat_cards.append(getattr(beat, "beat_card"))
+                        beat_realization_results.append(realization_result)
                     # 截断安全网：超出硬上限时，按书目偏好选择智能截断或字符硬截断
                     if signal.hard_cap > 0 and len(beat_content.strip()) > signal.hard_cap:
                         from application.engine.services.word_count_tracker import (
@@ -2056,6 +2194,50 @@ class AutopilotDaemon:
         beats_completed_count = sum(1 for b in (conductor.beats or []) if b.actual > 0)
         total_beats_count = len(beats) if beats else 0
         beats_completion_ratio = beats_completed_count / max(total_beats_count, 1)
+        unit_drama_completion = self._validate_unit_drama_completion(
+            beats or [],
+            realized_beat_cards,
+            beat_realization_results,
+        )
+        if unit_drama_completion is not None and not unit_drama_completion.passed:
+            logger.warning(
+                f"[{novel.novel_id}] ⚠️ 单元剧闭环验收失败：{unit_drama_completion.summary()}"
+            )
+            self._update_shared_state(
+                novel.novel_id.value,
+                writing_substep="unit_drama_validation_failed",
+                writing_substep_label="单元剧闭环验收失败",
+                last_unit_drama_validation={
+                    "passed": False,
+                    "score": unit_drama_completion.score,
+                    "summary": unit_drama_completion.summary(),
+                },
+            )
+            self.expanded_outline_trace_store.record_validation(
+                novel_id=novel.novel_id.value,
+                chapter_number=chapter_num,
+                beat_index=None,
+                stage="unit_drama_completion_failed",
+                result=unit_drama_completion,
+            )
+            self._flush_novel(novel)
+            return
+        if unit_drama_completion is not None:
+            self._update_shared_state(
+                novel.novel_id.value,
+                last_unit_drama_validation={
+                    "passed": True,
+                    "score": unit_drama_completion.score,
+                    "summary": unit_drama_completion.summary(),
+                },
+            )
+            self.expanded_outline_trace_store.record_validation(
+                novel_id=novel.novel_id.value,
+                chapter_number=chapter_num,
+                beat_index=None,
+                stage="unit_drama_completion",
+                result=unit_drama_completion,
+            )
 
         # 检测内容是否完整（以句号等结束符结尾）
         import re
@@ -2926,6 +3108,101 @@ class AutopilotDaemon:
         except Exception:
             return False
 
+    def _is_beat_too_short(self, beat_content: str, beat_target_words: int, *, is_final_beat: bool) -> bool:
+        """判断单拍是否短到不应进入正文。
+
+        短产出不能靠章尾补丁修，必须在当前拍原位重写。
+        """
+        actual = len((beat_content or "").strip())
+        if actual <= 0 or beat_target_words <= 0:
+            return False
+        floor_ratio = 0.55 if is_final_beat else BEAT_MIN_ACCEPT_RATIO
+        floor = max(180, int(beat_target_words * floor_ratio))
+        return actual < floor
+
+    def _validate_beat_realization(
+        self,
+        beat: Any,
+        beat_content: str,
+        beat_target_words: int,
+        *,
+        is_final_beat: bool,
+    ):
+        """Validate current beat prose before it can be appended or marked done."""
+        card = getattr(beat, "beat_card", None)
+        if card is None:
+            passed = not self._is_beat_too_short(
+                beat_content,
+                beat_target_words,
+                is_final_beat=is_final_beat,
+            )
+            from application.engine.dtos.validation_result import ValidationResult
+            if passed:
+                return ValidationResult(True, score=1.0)
+            return ValidationResult(
+                False,
+                [f"正文过短 {len((beat_content or '').strip())}/{beat_target_words}"],
+                score=0.0,
+            )
+        return self.beat_realization_validator.validate(
+            card=card,
+            content=beat_content,
+            target_words=beat_target_words,
+            is_final_beat=is_final_beat,
+        )
+
+    def _validate_unit_drama_completion(
+        self,
+        beats: List[Any],
+        realized_cards: List[Any],
+        realization_results: List[Any],
+    ):
+        """Validate unit-drama closure for a full fresh beat-card run.
+
+        If this process resumed from a partial draft, only the newly generated
+        beat results are known in memory. In that case we do not hard-fail the
+        chapter here; beat-level gates have already protected newly written
+        nodes.
+        """
+        planned_cards = [getattr(beat, "beat_card", None) for beat in beats if getattr(beat, "beat_card", None) is not None]
+        if not planned_cards:
+            return None
+        if len(realized_cards) != len(planned_cards):
+            logger.info(
+                "单元剧闭环验收跳过：本轮仅有 %d/%d 张节点卡结果（可能是断点续写）",
+                len(realized_cards),
+                len(planned_cards),
+            )
+            return None
+        units_by_id = {}
+        for beat in beats:
+            card = getattr(beat, "beat_card", None)
+            if not card:
+                continue
+            unit_id = getattr(card, "unit_id", "")
+            unit_plan = getattr(beat, "unit_plan", None)
+            if unit_id and unit_id not in units_by_id and unit_plan is not None:
+                units_by_id[unit_id] = unit_plan
+        grouped = self.beat_realization_validator.group_results_by_unit(realized_cards, realization_results)
+        return self.unit_drama_validator.validate_completion(list(units_by_id.values()), grouped)
+
+    def _build_beat_depth_retry_hint(
+        self,
+        beat_content: str,
+        beat_target_words: int,
+        attempt: int,
+    ) -> str:
+        """构造当前拍原位重写提示，避免追加式补写。"""
+        actual = len((beat_content or "").strip())
+        return (
+            "\n\n⚠️【当前节拍验收失败：原位重写】\n"
+            f"上一版本节拍只有 {actual} 字，目标约 {beat_target_words} 字，信息密度不足。\n"
+            f"这是第 {attempt} 次重写当前节拍。不要续写上一版，不要补丁式加段落；"
+            "请废弃上一版本节拍，重新写一个完整场景小单元。\n"
+            "必须包含：当前目标、具体阻碍、主角一次主动动作、动作后果、可见收获/代价或新风险。\n"
+            "每一段都要推进事件，禁止重复同一感官、同一判断或同一氛围。"
+        )
+
     async def _score_voice_only(
         self,
         novel_id: str,
@@ -3122,9 +3399,20 @@ class AutopilotDaemon:
         metrics = getattr(anti_report, "metrics", None)
         if not metrics:
             return False
-        assessment = getattr(metrics, "overall_assessment", None)
         severity_score = getattr(metrics, "severity_score", 0) or 0
-        return assessment == "严重" or severity_score >= 70
+        critical_hits = getattr(metrics, "critical_hits", 0) or 0
+        category_distribution = getattr(metrics, "category_distribution", {}) or {}
+        serious_categories = {
+            cat: count
+            for cat, count in category_distribution.items()
+            if cat not in {"句式"}
+        }
+
+        # 单一低危句式（例如破折号密集）只做提示，不触发整章结构性重写。
+        if critical_hits <= 0 and not serious_categories:
+            return False
+
+        return critical_hits >= 2 or severity_score >= 70
 
     def _build_anti_ai_rewrite_prompt(
         self,
@@ -3144,11 +3432,22 @@ class AutopilotDaemon:
 
         registry = get_prompt_registry()
 
-        behavior = registry.render_to_prompt(ANTI_AI_BEHAVIOR_PROTOCOL, {
+        def render_fragment(node_key: str, variables: Dict[str, Any]) -> Tuple[str, str]:
+            """渲染可嵌入的 prompt 片段。
+
+            Anti-AI 协议节点有些只有 user 模板，不能走 render_to_prompt()
+            的完整 Prompt 校验，否则空 system 片段会中断章后重写链路。
+            """
+            rendered = registry.render(node_key, variables)
+            if not rendered:
+                return "", ""
+            return rendered.system or "", rendered.user or ""
+
+        behavior_system, behavior_user = render_fragment(ANTI_AI_BEHAVIOR_PROTOCOL, {
             "nervous_habits": "",
             "allowlist_block": "",
         })
-        char_lock = registry.render_to_prompt(ANTI_AI_CHARACTER_STATE_LOCK, {
+        char_lock_system, char_lock_user = render_fragment(ANTI_AI_CHARACTER_STATE_LOCK, {
             "character_name": getattr(chapter, "pov_character", "") or "主角",
             "physical_state": getattr(chapter, "physical_state", "") or "状态正常",
             "emotional_baseline": getattr(chapter, "emotional_baseline", "") or "克制",
@@ -3157,6 +3456,11 @@ class AutopilotDaemon:
             "reaction_pattern": getattr(chapter, "reaction_pattern", "") or "当前反应模式",
             "known_information": "",
             "unknown_information": "",
+            "current_goal": getattr(chapter, "current_goal", "") or "从当前危机中活下来并争取主动权",
+            "fear": getattr(chapter, "fear", "") or "失去逃生机会或暴露更深秘密",
+            "misbelief": getattr(chapter, "misbelief", "") or "对局势仍有误判",
+            "default_strategy": getattr(chapter, "default_strategy", "") or "先观察，再试探，必要时冒险反击",
+            "required_choice": getattr(chapter, "required_choice", "") or "在危险推进时做出一个带代价的选择",
             "voice_rule": "",
             "physical_inertia_rule": "",
         })
@@ -3169,7 +3473,7 @@ class AutopilotDaemon:
         if top_patterns:
             issue = f"结构性AI味过重：{'; '.join(str(x) for x in top_patterns[:3])}"
 
-        refresh = registry.render_to_prompt(ANTI_AI_MID_GENERATION_REFRESH, {
+        refresh_system, refresh_user = render_fragment(ANTI_AI_MID_GENERATION_REFRESH, {
             "detected_issue": issue,
             "refresh_directive": (
                 "先补故事单元：目标、阻碍、行动、兑现、收获/代价、新期待。"
@@ -3178,7 +3482,7 @@ class AutopilotDaemon:
             "forbidden_pattern": "纯氛围、纯设定、纯内心、连续感官空转",
             "replacement_pattern": "人物动作、对白试探、发现/决定、带后果的选择",
         })
-        finale = registry.render_to_prompt(ANTI_AI_FINALE_ENHANCEMENT, {
+        finale_system, finale_user = render_fragment(ANTI_AI_FINALE_ENHANCEMENT, {
             "finale_text": content[-900:],
             "expected_ending": getattr(chapter, "outline", "") or "",
         })
@@ -3187,28 +3491,24 @@ class AutopilotDaemon:
             "你是章节结构性重写编辑。",
             "你的任务不是润色，而是把这一章改回可追读的网文章节单元。",
         ]
-        if behavior:
-            system_parts.append(behavior.system or "")
-        if char_lock:
-            system_parts.append(char_lock.system or "")
-        if refresh:
-            system_parts.append(refresh.system or "")
-        if finale:
-            system_parts.append(finale.system or "")
+        system_parts.extend([
+            behavior_system,
+            char_lock_system,
+            refresh_system,
+            finale_system,
+        ])
 
         user_parts = [
             f"章节大纲：{getattr(chapter, 'outline', '') or ''}",
             f"审计结论：{getattr(metrics, 'overall_assessment', '') or ''}",
             f"章节正文：\n{content}",
         ]
-        if behavior:
-            user_parts.append(behavior.user)
-        if char_lock:
-            user_parts.append(char_lock.user)
-        if refresh:
-            user_parts.append(refresh.user)
-        if finale:
-            user_parts.append(finale.user)
+        user_parts.extend([
+            behavior_user,
+            char_lock_user,
+            refresh_user,
+            finale_user,
+        ])
 
         return Prompt(system="\n\n".join(p for p in system_parts if p.strip()), user="\n\n".join(p for p in user_parts if p.strip()))
 

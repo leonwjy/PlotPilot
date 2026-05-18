@@ -1332,6 +1332,7 @@ class AutoNovelGenerationWorkflow:
         beat_target_words: Optional[int] = None,
         voice_anchors: str = "",
         chapter_draft_so_far: str = "",
+        beat_card: Optional[object] = None,
     ) -> Prompt:
         """构建与 HTTP 单章 / 流式 / 托管按节拍写作一致的 Prompt（对外 API）。"""
         return self._build_prompt(
@@ -1346,6 +1347,7 @@ class AutoNovelGenerationWorkflow:
             beat_target_words=beat_target_words,
             voice_anchors=voice_anchors,
             chapter_draft_so_far=chapter_draft_so_far,
+            beat_card=beat_card,
         )
 
     def _build_prompt(
@@ -1362,6 +1364,7 @@ class AutoNovelGenerationWorkflow:
         beat_target_words: Optional[int] = None,
         voice_anchors: str = "",
         chapter_draft_so_far: str = "",
+        beat_card: Optional[object] = None,
         regeneration_guidance: Optional[str] = None,
         chapter_target_words: Optional[int] = None,
     ) -> Prompt:
@@ -1378,6 +1381,7 @@ class AutoNovelGenerationWorkflow:
             beat_target_words: 本段目标字数（分节拍时覆盖整章说明）
             voice_anchors: Bible 角色声线/小动作锚点（高优先级 System 提示）
             chapter_draft_so_far: 同章内当前节拍之前已生成的正文
+            beat_card: 情绪/爽点节点卡，分节拍模式下用于结构化约束正文兑现
             chapter_target_words: 非 beat 模式下的整章目标字数（覆盖默认硬编码值）
 
         Returns:
@@ -1409,6 +1413,7 @@ class AutoNovelGenerationWorkflow:
             )
 
         beat_mode = bool((beat_prompt or "").strip())
+        beat_card_block = self._format_beat_card_block(beat_card)
         prior_in_chapter = format_prior_draft_for_prompt(chapter_draft_so_far)
         # 字数控制：像小说家一样自然收束，而非粗暴截断
         if beat_target_words:
@@ -1598,6 +1603,8 @@ class AutoNovelGenerationWorkflow:
 【节拍 {bi + 1}/{tb}】
 {(beat_prompt or '').strip()}
 
+{beat_card_block}
+
 {beat_tail}{transition_guide}{battle_hint}"""
 
         # 重写指导注入：告知 AI 这是重写任务，并提供改进方向
@@ -1611,6 +1618,35 @@ class AutoNovelGenerationWorkflow:
         user_message += "\n\n开始撰写："
 
         return Prompt(system=system_message, user=user_message)
+
+    def _format_beat_card_block(self, beat_card: Optional[object]) -> str:
+        if beat_card is None:
+            return ""
+        if hasattr(beat_card, "to_prompt_block"):
+            text = beat_card.to_prompt_block()
+        else:
+            fields = [
+                ("节点", getattr(beat_card, "title", "")),
+                ("节点功能", getattr(beat_card, "function", "")),
+                ("情绪缺口", getattr(beat_card, "emotion_gap", "")),
+                ("主角目标", getattr(beat_card, "protagonist_goal", "")),
+                ("阻碍/误判", getattr(beat_card, "obstacle_or_misbelief", "")),
+                ("主动动作", getattr(beat_card, "active_action", "")),
+                ("外界反馈", getattr(beat_card, "external_feedback", "")),
+                ("信息差变化", getattr(beat_card, "information_delta", "")),
+                ("小爽点/压迫点", getattr(beat_card, "mini_payoff_or_pressure", "")),
+                ("钩子变化", getattr(beat_card, "hook_delta", "")),
+                ("禁止漂移", getattr(beat_card, "forbidden_drift", "")),
+            ]
+            text = "\n".join(f"{name}：{value}" for name, value in fields if value)
+        if not text.strip():
+            return ""
+        return (
+            "\n【结构化节点卡（必须兑现，不得解释字段名）】\n"
+            f"{text.strip()}\n"
+            "执行规则：正文必须把主动动作、外界反馈、信息差变化和钩子变化写成可见事件；"
+            "如果节点卡与普通节拍提示冲突，以节点卡为准。"
+        )
 
     # ─── CPMS 模板获取辅助方法 ───
 

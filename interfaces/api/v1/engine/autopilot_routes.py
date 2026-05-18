@@ -568,6 +568,14 @@ def _build_status_pure_memory(novel_id: str, shared: Dict[str, Any]) -> Dict[str
         "beat_max_words_hint": shared.get("beat_max_words_hint", 0),
         "beat_remaining_budget": shared.get("beat_remaining_budget", 0),
         "last_smart_truncate": shared.get("last_smart_truncate"),
+        "current_unit_id": shared.get("current_unit_id", ""),
+        "current_node_card_title": shared.get("current_node_card_title", ""),
+        "current_node_card_function": shared.get("current_node_card_function", ""),
+        "current_node_card_action": shared.get("current_node_card_action", ""),
+        "current_node_card_feedback": shared.get("current_node_card_feedback", ""),
+        "current_node_card_info_delta": shared.get("current_node_card_info_delta", ""),
+        "last_node_validation": shared.get("last_node_validation"),
+        "last_unit_drama_validation": shared.get("last_unit_drama_validation"),
     }
 
 
@@ -726,6 +734,14 @@ def _build_status_with_shared(novel_id: str, shared: Dict[str, Any]) -> Dict[str
         "beat_max_words_hint": shared.get("beat_max_words_hint", 0),
         "beat_remaining_budget": shared.get("beat_remaining_budget", 0),
         "last_smart_truncate": shared.get("last_smart_truncate"),
+        "current_unit_id": shared.get("current_unit_id", ""),
+        "current_node_card_title": shared.get("current_node_card_title", ""),
+        "current_node_card_function": shared.get("current_node_card_function", ""),
+        "current_node_card_action": shared.get("current_node_card_action", ""),
+        "current_node_card_feedback": shared.get("current_node_card_feedback", ""),
+        "current_node_card_info_delta": shared.get("current_node_card_info_delta", ""),
+        "last_node_validation": shared.get("last_node_validation"),
+        "last_unit_drama_validation": shared.get("last_unit_drama_validation"),
     }
 
 
@@ -1426,6 +1442,23 @@ async def get_autopilot_status(novel_id: str):
     return status.to_dict()
 
 
+@router.get("/{novel_id}/expanded-outline/traces")
+async def list_expanded_outline_traces(
+    novel_id: str,
+    chapter_number: Optional[int] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    """List persisted unit-drama / node-card planning and validation traces."""
+    from application.engine.services.expanded_outline_trace_store import ExpandedOutlineTraceStore
+
+    traces = ExpandedOutlineTraceStore().list_traces(
+        novel_id=novel_id,
+        chapter_number=chapter_number,
+        limit=limit,
+    )
+    return {"novel_id": novel_id, "chapter_number": chapter_number, "traces": traces}
+
+
 @router.get("/{novel_id}/circuit-breaker")
 async def get_circuit_breaker(novel_id: str):
     """
@@ -1839,6 +1872,10 @@ async def autopilot_log_stream(
                     accumulated_words = _shared_sub.get("accumulated_words", 0)
                     chapter_target_words = _shared_sub.get("chapter_target_words", 0)
                     context_tokens = _shared_sub.get("context_tokens", 0)
+                    current_node_card_title = _shared_sub.get("current_node_card_title", "")
+                    current_node_card_function = _shared_sub.get("current_node_card_function", "")
+                    last_node_validation = _shared_sub.get("last_node_validation")
+                    last_unit_drama_validation = _shared_sub.get("last_unit_drama_validation")
 
                     # 构建细化的进度消息
                     substep_hint = f" · {writing_substep_label}" if writing_substep_label else ""
@@ -1880,6 +1917,14 @@ async def autopilot_log_stream(
                             "accumulated_words": int(accumulated_words or 0),
                             "chapter_target_words": int(chapter_target_words or 0),
                             "context_tokens": int(context_tokens or 0),
+                            "current_unit_id": _shared_sub.get("current_unit_id", ""),
+                            "current_node_card_title": current_node_card_title,
+                            "current_node_card_function": current_node_card_function,
+                            "current_node_card_action": _shared_sub.get("current_node_card_action", ""),
+                            "current_node_card_feedback": _shared_sub.get("current_node_card_feedback", ""),
+                            "current_node_card_info_delta": _shared_sub.get("current_node_card_info_delta", ""),
+                            "last_node_validation": last_node_validation,
+                            "last_unit_drama_validation": last_unit_drama_validation,
                         },
                     }
                     yield f"data: {json.dumps(progress_event, ensure_ascii=False)}\n\n"
@@ -2388,4 +2433,3 @@ async def debug_all(novel_id: str = None):
         "novel": novel_info,
         "cache_stats": _SHARED_STATE_CACHE.get_stats(),
     }
-
