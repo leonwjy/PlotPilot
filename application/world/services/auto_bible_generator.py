@@ -885,7 +885,6 @@ JSON 格式（不要有其他文字）：
     async def _save_worldbuilding(self, novel_id: str, worldbuilding_data: Dict[str, Any]) -> None:
         """保存世界观到数据库（同时保存到Worldbuilding表和Bible的world_settings）"""
         logger.debug("_save_worldbuilding called")
-        worldbuilding_data = await self._prepare_worldbuilding_for_save(novel_id, worldbuilding_data)
 
         # 1. 保存到Worldbuilding表（用于后续生成人物和地点时读取）
         if self.worldbuilding_service:
@@ -900,14 +899,7 @@ JSON 格式（不要有其他文字）：
                     daily_life=worldbuilding_data.get("daily_life")
                 )
                 logger.debug("Worldbuilding saved to Worldbuilding table")
-                summary = self._worldbuilding_field_summary(worldbuilding_data)
-                logger.info(
-                    "Worldbuilding saved for %s (nonempty=%d/%d, missing=%s)",
-                    novel_id,
-                    summary["nonempty"],
-                    summary["total"],
-                    summary["missing"],
-                )
+                logger.info(f"Worldbuilding saved for {novel_id}")
             except Exception as e:
                 logger.error("Failed to save worldbuilding: %s", e)
 
@@ -936,153 +928,6 @@ JSON 格式（不要有其他文字）：
             logger.info("Worldbuilding saved to Bible.world_settings successfully")
         except Exception as e:
             logger.error(f"Failed to save to Bible.world_settings: {e}")
-
-    def _worldbuilding_field_summary(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        total = 0
-        nonempty = 0
-        missing: list[str] = []
-        for dim_key, dim_def in self._DIMENSION_DEFS.items():
-            dim_data = data.get(dim_key) if isinstance(data, dict) else None
-            if not isinstance(dim_data, dict):
-                dim_data = {}
-            for field_key in dim_def["fields"]:
-                total += 1
-                value = str(dim_data.get(field_key) or "").strip()
-                if value:
-                    nonempty += 1
-                else:
-                    missing.append(f"{dim_key}.{field_key}")
-        return {"total": total, "nonempty": nonempty, "missing": missing}
-
-    def _normalize_dimension_fields(
-        self,
-        dim_key: str,
-        dim_data: Any,
-    ) -> tuple[Dict[str, str], Dict[str, str]]:
-        """只保留项目架构字段；LLM 自造字段不进入结构。"""
-        dim_def = self._DIMENSION_DEFS.get(dim_key)
-        if not dim_def or not isinstance(dim_data, dict):
-            return {}, {}
-
-        allowed = set(dim_def["fields"].keys())
-        normalized: Dict[str, str] = {}
-        rejected: Dict[str, str] = {}
-        for key, value in dim_data.items():
-            if isinstance(value, str):
-                text = value.strip()
-            elif isinstance(value, (list, dict)):
-                text = json.dumps(value, ensure_ascii=False)
-            else:
-                text = str(value).strip() if value is not None else ""
-            if not text:
-                continue
-            if key in allowed:
-                normalized[key] = text
-            else:
-                rejected[str(key)] = text
-        return normalized, rejected
-
-    async def _prepare_worldbuilding_for_save(
-        self,
-        novel_id: str,
-        worldbuilding_data: Dict[str, Any],
-    ) -> Dict[str, Dict[str, str]]:
-        """保存前按项目架构校验字段，并补齐本次涉及维度的缺字段。"""
-        normalized: Dict[str, Dict[str, str]] = {}
-        rejected_keys: list[str] = []
-        touched_dims: list[str] = []
-
-        if not isinstance(worldbuilding_data, dict):
-            worldbuilding_data = {}
-
-        for dim_key, raw_dim in worldbuilding_data.items():
-            if dim_key not in self._DIMENSION_DEFS:
-                logger.warning("Worldbuilding ignored unknown dimension %s for %s", dim_key, novel_id)
-                continue
-            touched_dims.append(dim_key)
-            dim_normalized, rejected = self._normalize_dimension_fields(dim_key, raw_dim)
-            normalized[dim_key] = dim_normalized
-            rejected_keys.extend(f"{dim_key}.{key}" for key in rejected)
-
-        if rejected_keys:
-            logger.warning(
-                "Worldbuilding rejected non-schema fields for %s: %s",
-                novel_id,
-                rejected_keys,
-            )
-
-        premise = ""
-        target_chapters = 0
-        try:
-            from infrastructure.persistence.database.sqlite_novel_repository import SQLiteNovelRepository
-            from application.paths import get_db_path
-            from domain.novel.value_objects.novel_id import NovelId
-
-            novel = SQLiteNovelRepository(get_db_path()).get_by_id(NovelId(novel_id))
-            if novel:
-                premise = novel.premise or novel.title or novel_id
-                target_chapters = int(getattr(novel, "target_chapters", 0) or 0)
-        except Exception as exc:
-            logger.debug("Failed to load novel for worldbuilding completion: %s", exc)
-
-        if not premise:
-            premise = novel_id
-
-        existing = self._load_worldbuilding(novel_id)
-        for dim_key in touched_dims:
-            dim_data = normalized.setdefault(dim_key, {})
-            existing_dim = existing.get(dim_key) if isinstance(existing, dict) else {}
-            if isinstance(existing_dim, dict):
-                for field_key in self._DIMENSION_DEFS[dim_key]["fields"]:
-                    if not str(dim_data.get(field_key) or "").strip():
-                        old_value = str(existing_dim.get(field_key) or "").strip()
-                        if old_value:
-                            dim_data[field_key] = old_value
-
-            missing_fields = [
-                field_key
-                for field_key in self._DIMENSION_DEFS[dim_key]["fields"]
-                if not str(dim_data.get(field_key) or "").strip()
-            ]
-            if not missing_fields:
-                continue
-
-            logger.warning(
-                "Worldbuilding missing fields before save for %s.%s: %s; generating supplements",
-                novel_id,
-                dim_key,
-                missing_fields,
-            )
-            for field_key in missing_fields:
-                try:
-                    generated = await self._generate_single_field(
-                        premise,
-                        target_chapters,
-                        dim_key,
-                        field_key,
-                        {**existing, **normalized},
-                        dim_data,
-                    )
-                except Exception as exc:
-                    logger.error(
-                        "Failed to supplement worldbuilding field %s.%s for %s: %s",
-                        dim_key,
-                        field_key,
-                        novel_id,
-                        exc,
-                    )
-                    generated = ""
-                if generated:
-                    dim_data[field_key] = generated
-
-        final_summary = self._worldbuilding_field_summary(normalized)
-        if final_summary["missing"]:
-            logger.warning(
-                "Worldbuilding still incomplete for %s after supplement: %s",
-                novel_id,
-                final_summary["missing"],
-            )
-        return normalized
 
     def _worldbuilding_dict_nonempty(self, data: Dict[str, Any]) -> bool:
         for block in data.values():
@@ -1241,7 +1086,7 @@ JSON 格式：
         result = await self.llm_service.generate(prompt, config)
         return (result.content or "").strip()
 
-    # 维度定义：key → (label, field_definitions)
+    # 维度定义与 worldbuilding 表结构保持一致；这里只列可真正入库的字段。
     _DIMENSION_DEFS = {
         "core_rules": {
             "label": "核心法则",
@@ -1285,6 +1130,71 @@ JSON 格式：
             },
         },
     }
+
+    def _normalize_dimension_for_storage(self, dim_key: str, dim_data: Any) -> Dict[str, str]:
+        """只保留可入库标准字段；不做语义别名映射。"""
+        dim_def = self._DIMENSION_DEFS.get(dim_key)
+        if not dim_def or not isinstance(dim_data, dict):
+            return {}
+
+        allowed = set(dim_def["fields"].keys())
+        normalized: Dict[str, str] = {}
+        rejected: list[str] = []
+        for key, value in dim_data.items():
+            if key not in allowed:
+                rejected.append(str(key))
+                continue
+            if isinstance(value, str):
+                text = value.strip()
+            elif isinstance(value, (list, dict)):
+                text = json.dumps(value, ensure_ascii=False)
+            else:
+                text = str(value).strip() if value is not None else ""
+            if text:
+                normalized[key] = text
+
+        if rejected:
+            logger.warning(
+                "Worldbuilding dimension %s ignored non-storage fields: %s",
+                dim_key,
+                rejected,
+            )
+        return normalized
+
+    async def _complete_dimension_storage_fields(
+        self,
+        premise: str,
+        target_chapters: int,
+        dim_key: str,
+        dim_data: Dict[str, str],
+        existing_worldbuilding: Dict[str, Any] | None = None,
+    ) -> Dict[str, str]:
+        """补齐同一维度中缺失的可入库字段；只按标准字段生成，不洗错 key。"""
+        dim_def = self._DIMENSION_DEFS.get(dim_key)
+        if not dim_def:
+            return dim_data
+
+        completed = dict(dim_data)
+        missing = [
+            field_key
+            for field_key in dim_def["fields"]
+            if not str(completed.get(field_key) or "").strip()
+        ]
+        if missing:
+            logger.warning("Worldbuilding dimension %s missing storage fields: %s", dim_key, missing)
+
+        for field_key in missing:
+            generated = await self._generate_single_field(
+                premise,
+                target_chapters,
+                dim_key,
+                field_key,
+                existing_worldbuilding,
+                completed,
+            )
+            if generated:
+                completed[field_key] = generated
+        return completed
 
     async def _generate_single_dimension(
         self,
@@ -1380,15 +1290,14 @@ JSON 格式：
             if not isinstance(result, dict):
                 logger.warning("Dimension %s LLM returned non-dict: %s", dim_key, type(result))
                 return {}
-            # 标准化：只保留已定义的字段，但也不丢弃 LLM 生成的有效额外字段
-            normalized = {}
-            for k, v in result.items():
-                if isinstance(v, str) and v.strip():
-                    normalized[k] = v.strip()
-                elif isinstance(v, (list, dict)):
-                    # LLM 偶尔返回嵌套结构，扁平化处理
-                    normalized[k] = str(v)
-            return normalized
+            normalized = self._normalize_dimension_for_storage(dim_key, result)
+            return await self._complete_dimension_storage_fields(
+                premise,
+                target_chapters,
+                dim_key,
+                normalized,
+                existing_worldbuilding,
+            )
         except Exception as e:
             logger.error("Failed to generate dimension %s: %s", dim_key, e)
             return {}
