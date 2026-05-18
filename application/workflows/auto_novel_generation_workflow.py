@@ -1511,6 +1511,8 @@ class AutoNovelGenerationWorkflow:
             "theme_rules": theme_rules,
             "planning_section": planning_section,
             "voice_block": voice_block,
+            "behavior_protocol": "",
+            "character_state_lock": "",
             "context": context,
             "fact_lock": fact_lock,
             "shuangwen_directive": shuangwen_directive,
@@ -1518,6 +1520,8 @@ class AutoNovelGenerationWorkflow:
             "length_rule": length_rule,
             "beat_extra": beat_extra,
             "format_rules": format_rules,
+            "nervous_habits": "",
+            "allowlist_block": "",
         }
         system_message = _safe_format(system_template, system_vars)
 

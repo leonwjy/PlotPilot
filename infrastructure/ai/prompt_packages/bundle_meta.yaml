@@ -1,6 +1,6 @@
-version: 5.0.0-cpms-unified
+version: 5.1.2-score-aligned-full-chain
 name: PlotPilot 内置
 description: CPMS v5 统一提示词库 — 全节点中文提示词、统一注册表、消除硬编码
 author: PlotPilot Team
 engine: jinja2
-changelog: 'v5: CPMS统一架构 — 所有节点中文1:1还原、prompt_keys注册表、消除旧JSON回退'
+changelog: 'v5.1.2: 全链路评分对齐 — 在5.1.1基础上补充前800字名词密度、不是是句式预算、爽点反馈链、结构性Anti-AI和角色行动锁二次收敛规则'
