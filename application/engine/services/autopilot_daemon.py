@@ -10,6 +10,7 @@
 import time
 import logging
 import asyncio
+import re
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -1766,7 +1767,7 @@ class AutopilotDaemon:
                         # 流式被中断时，最后一个节拍可能在句子中间被截断。
                         # 截断到最近的句子边界，避免残篇以半句结尾落盘。
                         safe_content = accumulated_content.strip()
-                        if not re.search(r'[。！？…）】》""\'』」]$', safe_content):
+                        if not re.search(r'[。！？…）】》"\'』」]$', safe_content):
                             last_ender = max(
                                 safe_content.rfind('。'),
                                 safe_content.rfind('！'),
@@ -1857,17 +1858,12 @@ class AutopilotDaemon:
 
                         stripped = beat_content.strip()
                         original_len = len(stripped)
-                        use_smart = novel.generation_prefs.smart_truncate_enabled
-                        if use_smart:
-                            beat_content = smart_truncate(
-                                stripped, signal.hard_cap, focus=str(beat_focus or "")
-                            )
-                            trunc_mode = "smart"
-                            label = "智能截断"
-                        else:
-                            beat_content = hard_truncate_at_chars(stripped, signal.hard_cap)
-                            trunc_mode = "hard"
-                            label = "硬截断"
+                        use_smart = True
+                        beat_content = smart_truncate(
+                            stripped, signal.hard_cap, focus=str(beat_focus or "")
+                        )
+                        trunc_mode = "smart"
+                        label = "智能截断"
                         logger.warning(
                             f"[{novel.novel_id}] ⚡ {label}：节拍 {i + 1} "
                             f"{original_len} → {len(beat_content)} 字 "
@@ -2678,6 +2674,19 @@ class AutopilotDaemon:
             )
         anti_ai_severe = anti_assessment == "严重"
 
+        if anti_ai_severe and self._is_still_running(novel):
+            content, anti_report = await self._apply_anti_ai_rewrite_loop(
+                novel,
+                chapter,
+                content,
+                anti_report,
+            )
+            if anti_report is not None:
+                anti_assessment = getattr(
+                    getattr(anti_report, "metrics", None), "overall_assessment", None
+                )
+                anti_ai_severe = anti_assessment == "严重"
+
         pause_gate = (not auto) and (
             bool(getattr(prefs, "pause_after_each_chapter_audit", False))
             or (
@@ -3106,6 +3115,186 @@ class AutopilotDaemon:
 
         return current_content, current_result
 
+    def _should_attempt_anti_ai_rewrite(self, anti_report: Any) -> bool:
+        """严重 Anti-AI 味时是否触发结构性重写。"""
+        if not anti_report:
+            return False
+        metrics = getattr(anti_report, "metrics", None)
+        if not metrics:
+            return False
+        assessment = getattr(metrics, "overall_assessment", None)
+        severity_score = getattr(metrics, "severity_score", 0) or 0
+        return assessment == "严重" or severity_score >= 70
+
+    def _build_anti_ai_rewrite_prompt(
+        self,
+        novel: Novel,
+        chapter,
+        content: str,
+        anti_report: Any,
+    ) -> Prompt:
+        """构建结构性 Anti-AI 重写提示。"""
+        from infrastructure.ai.prompt_keys import (
+            ANTI_AI_BEHAVIOR_PROTOCOL,
+            ANTI_AI_CHARACTER_STATE_LOCK,
+            ANTI_AI_MID_GENERATION_REFRESH,
+            ANTI_AI_FINALE_ENHANCEMENT,
+        )
+        from infrastructure.ai.prompt_registry import get_prompt_registry
+
+        registry = get_prompt_registry()
+
+        behavior = registry.render_to_prompt(ANTI_AI_BEHAVIOR_PROTOCOL, {
+            "nervous_habits": "",
+            "allowlist_block": "",
+        })
+        char_lock = registry.render_to_prompt(ANTI_AI_CHARACTER_STATE_LOCK, {
+            "character_name": getattr(chapter, "pov_character", "") or "主角",
+            "physical_state": getattr(chapter, "physical_state", "") or "状态正常",
+            "emotional_baseline": getattr(chapter, "emotional_baseline", "") or "克制",
+            "nervous_habit": getattr(chapter, "nervous_habit", "") or "默认习惯性反应",
+            "voice_print": getattr(chapter, "voice_print", "") or "现有声线",
+            "reaction_pattern": getattr(chapter, "reaction_pattern", "") or "当前反应模式",
+            "known_information": "",
+            "unknown_information": "",
+            "voice_rule": "",
+            "physical_inertia_rule": "",
+        })
+
+        metrics = getattr(anti_report, "metrics", None)
+        top_patterns = []
+        if metrics:
+            top_patterns = list(getattr(metrics, "top_patterns", []) or [])
+        issue = "结构性AI味过重"
+        if top_patterns:
+            issue = f"结构性AI味过重：{'; '.join(str(x) for x in top_patterns[:3])}"
+
+        refresh = registry.render_to_prompt(ANTI_AI_MID_GENERATION_REFRESH, {
+            "detected_issue": issue,
+            "refresh_directive": (
+                "先补故事单元：目标、阻碍、行动、兑现、收获/代价、新期待。"
+                "再压文字病：形容词堆砌、机械对照、微表情、抽象氛围、重复体感。"
+            ),
+            "forbidden_pattern": "纯氛围、纯设定、纯内心、连续感官空转",
+            "replacement_pattern": "人物动作、对白试探、发现/决定、带后果的选择",
+        })
+        finale = registry.render_to_prompt(ANTI_AI_FINALE_ENHANCEMENT, {
+            "finale_text": content[-900:],
+            "expected_ending": getattr(chapter, "outline", "") or "",
+        })
+
+        system_parts = [
+            "你是章节结构性重写编辑。",
+            "你的任务不是润色，而是把这一章改回可追读的网文章节单元。",
+        ]
+        if behavior:
+            system_parts.append(behavior.system or "")
+        if char_lock:
+            system_parts.append(char_lock.system or "")
+        if refresh:
+            system_parts.append(refresh.system or "")
+        if finale:
+            system_parts.append(finale.system or "")
+
+        user_parts = [
+            f"章节大纲：{getattr(chapter, 'outline', '') or ''}",
+            f"审计结论：{getattr(metrics, 'overall_assessment', '') or ''}",
+            f"章节正文：\n{content}",
+        ]
+        if behavior:
+            user_parts.append(behavior.user)
+        if char_lock:
+            user_parts.append(char_lock.user)
+        if refresh:
+            user_parts.append(refresh.user)
+        if finale:
+            user_parts.append(finale.user)
+
+        return Prompt(system="\n\n".join(p for p in system_parts if p.strip()), user="\n\n".join(p for p in user_parts if p.strip()))
+
+    async def _rewrite_chapter_for_anti_ai(
+        self,
+        novel: Novel,
+        chapter,
+        content: str,
+        anti_report: Any,
+        attempt: int,
+    ) -> Optional[str]:
+        """执行一次结构性 Anti-AI 重写。"""
+        if not self.llm_service:
+            return None
+
+        prompt = self._build_anti_ai_rewrite_prompt(novel, chapter, content, anti_report)
+        config = GenerationConfig(
+            max_tokens=max(4096, min(9000, int(len(content) * 1.4))),
+            temperature=0.4,
+        )
+        try:
+            result = await self.llm_service.generate(prompt, config)
+        except Exception as e:
+            logger.warning("[%s] Anti-AI 重写失败（attempt=%d）：%s", novel.novel_id, attempt, e)
+            return None
+
+        rewritten = strip_reasoning_artifacts((result.content or "").strip())
+        return rewritten or None
+
+    async def _apply_anti_ai_rewrite_loop(
+        self,
+        novel: Novel,
+        chapter,
+        content: str,
+        anti_report: Any,
+    ) -> tuple[str, Any]:
+        """严重 AI 味时做有限次结构性重写，并复核结果。"""
+        current_content = content
+        current_report = anti_report
+
+        for attempt in range(1, 3):
+            if not self._should_attempt_anti_ai_rewrite(current_report):
+                break
+            if not self._is_still_running(novel):
+                logger.info("[%s] 用户已停止，终止 Anti-AI 重写", novel.novel_id)
+                break
+
+            logger.warning(
+                "[%s] 章节 %s Anti-AI 严重，开始第 %d 轮结构性重写",
+                novel.novel_id,
+                chapter.number,
+                attempt,
+            )
+            rewritten = await self._rewrite_chapter_for_anti_ai(
+                novel,
+                chapter,
+                current_content,
+                current_report,
+                attempt,
+            )
+            if not rewritten or rewritten.strip() == current_content.strip():
+                logger.warning("[%s] Anti-AI 重写未产生有效变化，停止继续重试", novel.novel_id)
+                break
+
+            current_content = rewritten
+            self._save_chapter_ephemeral(
+                novel.novel_id.value,
+                chapter.number,
+                content=current_content,
+                word_count=len(current_content.strip()),
+            )
+            current_report = await self._call_with_timeout(
+                self._run_anti_ai_audit(novel.novel_id.value, chapter.number, current_content),
+                timeout=180.0,
+                novel_id=novel.novel_id.value,
+                label="anti_ai_reaudit",
+                fallback=current_report,
+            )
+            logger.info(
+                "[%s] Anti-AI 重写后重新审计完成 attempt=%d",
+                novel.novel_id,
+                attempt,
+            )
+
+        return current_content, current_report
+
     def _legacy_auditing_tasks_and_voice(
         self,
         novel: Novel,
@@ -3465,8 +3654,6 @@ class AutopilotDaemon:
         Returns:
             完整的内容（可能包含续写部分）
         """
-        import re
-
         if not content or not content.strip():
             return content
 
@@ -3613,7 +3800,6 @@ class AutopilotDaemon:
             "narration" - 叙述中间截断（正常段落中间）
             "scene" - 场景中间截断（环境描写中间）
         """
-        import re
         # 检查是否有未闭合的中文引号
         open_quotes = text.count('「') + text.count('"') + text.count('"')
         close_quotes = text.count('」') + text.count('"') + text.count('"')
@@ -3632,7 +3818,6 @@ class AutopilotDaemon:
 
         如果找不到好的边界，至少保证不留下半句话。
         """
-        import re
         ending_pattern = r'[。！？…）】》"\'』」]'
 
         # 从后往前找最后一个句子结束符
@@ -4018,4 +4203,3 @@ class AutopilotDaemon:
         
         except Exception as e:
             logger.warning(f"[{novel.novel_id}] 摘要生成失败: {e}")
-

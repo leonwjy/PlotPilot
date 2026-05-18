@@ -8,6 +8,11 @@
 - 反应模式：{reaction_pattern}
 - 本章已知信息：{known_information}
 - 本章未知信息：{unknown_information}
+- 当前目标：{current_goal}
+- 最害怕失去：{fear}
+- 当前误判：{misbelief}
+- 默认策略：{default_strategy}
+- 本章必须做出的选择：{required_choice}
 
 🔒 锁定规则：
 1. 声线指纹不可偏离——{voice_rule}

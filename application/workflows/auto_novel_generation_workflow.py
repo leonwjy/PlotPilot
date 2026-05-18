@@ -1414,19 +1414,19 @@ class AutoNovelGenerationWorkflow:
         if beat_target_words:
             length_rule = (
                 f"7. 【字数指引】本节拍约 {beat_target_words} 字。"
-                f"用有信息的对话、动作与因果推进填到目标附近，禁止为凑字重复描写同一致震撼或同一情绪；"
-                f"收束用完整句，不要戛然而止。"
+                f"优先完成本节拍对应的章纲功能：目标、阻碍、行动、兑现或钩子；"
+                f"能收束就收束，禁止为了凑字重复描写同一情绪或同一场面。"
             )
         elif beat_mode:
             length_rule = "7. 按下方节拍说明控制篇幅，勿写章节标题"
         elif chapter_target_words:
             length_rule = (
                 f"7. 【章节字数指引】本章目标约 {chapter_target_words} 字。"
-                f"完整覆盖下方大纲的所有要点，字数不足时优先补充对话与场景细节，禁止重复情节水字；"
-                f"用完整句收束，不要戛然而止。"
+                f"完整覆盖下方大纲的所有要点，按章纲功能完成故事单元，不能因为字数不足就放弃收束；"
+                f"如果目标已完成，优先结束本章并留下具体钩子。"
             )
         else:
-            length_rule = "7. 章节长度：3000-4000字"
+            length_rule = "7. 章节长度：2000-3500字，按故事单元完整收束"
         beat_extra = ""
         if beat_mode and beat_index is not None and total_beats is not None and total_beats > 0:
             if prior_in_chapter:
@@ -1511,8 +1511,8 @@ class AutoNovelGenerationWorkflow:
             "theme_rules": theme_rules,
             "planning_section": planning_section,
             "voice_block": voice_block,
-            "behavior_protocol": "",
-            "character_state_lock": "",
+            "behavior_protocol": self._load_prompt_block("anti-ai-behavior-protocol", "system", "user"),
+            "character_state_lock": self._load_prompt_block("anti-ai-character-state-lock", "system", "user"),
             "context": context,
             "fact_lock": fact_lock,
             "shuangwen_directive": shuangwen_directive,
@@ -1613,6 +1613,28 @@ class AutoNovelGenerationWorkflow:
         return Prompt(system=system_message, user=user_message)
 
     # ─── CPMS 模板获取辅助方法 ───
+
+    def _load_prompt_block(self, node_key: str, *parts: str) -> str:
+        """从 CPMS 读取可注入提示词块，保留未提供变量的占位符。"""
+        try:
+            from infrastructure.ai.prompt_registry import get_prompt_registry
+
+            registry = get_prompt_registry()
+            chunks: list[str] = []
+            for part in parts:
+                if part == "system":
+                    text = registry.get_system(node_key)
+                elif part in ("user", "user_template"):
+                    text = registry.get_user_template(node_key)
+                else:
+                    text = registry.get_field(node_key, part, "")
+                if isinstance(text, str) and text.strip():
+                    chunks.append(text.strip())
+            if chunks:
+                return "\n\n".join(chunks) + "\n\n"
+        except Exception as exc:
+            logger.debug("Prompt block 加载失败 (node_key=%s): %s", node_key, exc)
+        return ""
 
     def _get_workflow_system_template(self) -> str:
         """获取主工作流 system 模板（CPMS 优先 -> 硬编码回退）。

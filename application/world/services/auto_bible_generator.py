@@ -885,6 +885,7 @@ JSON 格式（不要有其他文字）：
     async def _save_worldbuilding(self, novel_id: str, worldbuilding_data: Dict[str, Any]) -> None:
         """保存世界观到数据库（同时保存到Worldbuilding表和Bible的world_settings）"""
         logger.debug("_save_worldbuilding called")
+        worldbuilding_data = await self._prepare_worldbuilding_for_save(novel_id, worldbuilding_data)
 
         # 1. 保存到Worldbuilding表（用于后续生成人物和地点时读取）
         if self.worldbuilding_service:
@@ -899,7 +900,14 @@ JSON 格式（不要有其他文字）：
                     daily_life=worldbuilding_data.get("daily_life")
                 )
                 logger.debug("Worldbuilding saved to Worldbuilding table")
-                logger.info(f"Worldbuilding saved for {novel_id}")
+                summary = self._worldbuilding_field_summary(worldbuilding_data)
+                logger.info(
+                    "Worldbuilding saved for %s (nonempty=%d/%d, missing=%s)",
+                    novel_id,
+                    summary["nonempty"],
+                    summary["total"],
+                    summary["missing"],
+                )
             except Exception as e:
                 logger.error("Failed to save worldbuilding: %s", e)
 
@@ -928,6 +936,153 @@ JSON 格式（不要有其他文字）：
             logger.info("Worldbuilding saved to Bible.world_settings successfully")
         except Exception as e:
             logger.error(f"Failed to save to Bible.world_settings: {e}")
+
+    def _worldbuilding_field_summary(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        total = 0
+        nonempty = 0
+        missing: list[str] = []
+        for dim_key, dim_def in self._DIMENSION_DEFS.items():
+            dim_data = data.get(dim_key) if isinstance(data, dict) else None
+            if not isinstance(dim_data, dict):
+                dim_data = {}
+            for field_key in dim_def["fields"]:
+                total += 1
+                value = str(dim_data.get(field_key) or "").strip()
+                if value:
+                    nonempty += 1
+                else:
+                    missing.append(f"{dim_key}.{field_key}")
+        return {"total": total, "nonempty": nonempty, "missing": missing}
+
+    def _normalize_dimension_fields(
+        self,
+        dim_key: str,
+        dim_data: Any,
+    ) -> tuple[Dict[str, str], Dict[str, str]]:
+        """只保留项目架构字段；LLM 自造字段不进入结构。"""
+        dim_def = self._DIMENSION_DEFS.get(dim_key)
+        if not dim_def or not isinstance(dim_data, dict):
+            return {}, {}
+
+        allowed = set(dim_def["fields"].keys())
+        normalized: Dict[str, str] = {}
+        rejected: Dict[str, str] = {}
+        for key, value in dim_data.items():
+            if isinstance(value, str):
+                text = value.strip()
+            elif isinstance(value, (list, dict)):
+                text = json.dumps(value, ensure_ascii=False)
+            else:
+                text = str(value).strip() if value is not None else ""
+            if not text:
+                continue
+            if key in allowed:
+                normalized[key] = text
+            else:
+                rejected[str(key)] = text
+        return normalized, rejected
+
+    async def _prepare_worldbuilding_for_save(
+        self,
+        novel_id: str,
+        worldbuilding_data: Dict[str, Any],
+    ) -> Dict[str, Dict[str, str]]:
+        """保存前按项目架构校验字段，并补齐本次涉及维度的缺字段。"""
+        normalized: Dict[str, Dict[str, str]] = {}
+        rejected_keys: list[str] = []
+        touched_dims: list[str] = []
+
+        if not isinstance(worldbuilding_data, dict):
+            worldbuilding_data = {}
+
+        for dim_key, raw_dim in worldbuilding_data.items():
+            if dim_key not in self._DIMENSION_DEFS:
+                logger.warning("Worldbuilding ignored unknown dimension %s for %s", dim_key, novel_id)
+                continue
+            touched_dims.append(dim_key)
+            dim_normalized, rejected = self._normalize_dimension_fields(dim_key, raw_dim)
+            normalized[dim_key] = dim_normalized
+            rejected_keys.extend(f"{dim_key}.{key}" for key in rejected)
+
+        if rejected_keys:
+            logger.warning(
+                "Worldbuilding rejected non-schema fields for %s: %s",
+                novel_id,
+                rejected_keys,
+            )
+
+        premise = ""
+        target_chapters = 0
+        try:
+            from infrastructure.persistence.database.sqlite_novel_repository import SQLiteNovelRepository
+            from application.paths import get_db_path
+            from domain.novel.value_objects.novel_id import NovelId
+
+            novel = SQLiteNovelRepository(get_db_path()).get_by_id(NovelId(novel_id))
+            if novel:
+                premise = novel.premise or novel.title or novel_id
+                target_chapters = int(getattr(novel, "target_chapters", 0) or 0)
+        except Exception as exc:
+            logger.debug("Failed to load novel for worldbuilding completion: %s", exc)
+
+        if not premise:
+            premise = novel_id
+
+        existing = self._load_worldbuilding(novel_id)
+        for dim_key in touched_dims:
+            dim_data = normalized.setdefault(dim_key, {})
+            existing_dim = existing.get(dim_key) if isinstance(existing, dict) else {}
+            if isinstance(existing_dim, dict):
+                for field_key in self._DIMENSION_DEFS[dim_key]["fields"]:
+                    if not str(dim_data.get(field_key) or "").strip():
+                        old_value = str(existing_dim.get(field_key) or "").strip()
+                        if old_value:
+                            dim_data[field_key] = old_value
+
+            missing_fields = [
+                field_key
+                for field_key in self._DIMENSION_DEFS[dim_key]["fields"]
+                if not str(dim_data.get(field_key) or "").strip()
+            ]
+            if not missing_fields:
+                continue
+
+            logger.warning(
+                "Worldbuilding missing fields before save for %s.%s: %s; generating supplements",
+                novel_id,
+                dim_key,
+                missing_fields,
+            )
+            for field_key in missing_fields:
+                try:
+                    generated = await self._generate_single_field(
+                        premise,
+                        target_chapters,
+                        dim_key,
+                        field_key,
+                        {**existing, **normalized},
+                        dim_data,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Failed to supplement worldbuilding field %s.%s for %s: %s",
+                        dim_key,
+                        field_key,
+                        novel_id,
+                        exc,
+                    )
+                    generated = ""
+                if generated:
+                    dim_data[field_key] = generated
+
+        final_summary = self._worldbuilding_field_summary(normalized)
+        if final_summary["missing"]:
+            logger.warning(
+                "Worldbuilding still incomplete for %s after supplement: %s",
+                novel_id,
+                final_summary["missing"],
+            )
+        return normalized
 
     def _worldbuilding_dict_nonempty(self, data: Dict[str, Any]) -> bool:
         for block in data.values():
@@ -1094,8 +1249,6 @@ JSON 格式：
                 "power_system": "力量体系/科技树的描述",
                 "physics_rules": "物理规律的特殊之处",
                 "magic_tech": "魔法或科技的运作机制",
-                "cost_and_limitation": "力量使用的代价与限制（修炼消耗、越级代价、禁忌代价）",
-                "resource_scarcity": "稀缺资源及其分配（硬通货、垄断情况）",
             },
         },
         "geography": {
@@ -1105,9 +1258,6 @@ JSON 格式：
                 "climate": "气候特点与环境",
                 "resources": "自然资源分布",
                 "ecology": "生态系统与生物链",
-                "forbidden_zones": "禁区/危险区域",
-                "urban_core": "核心城市/聚居地",
-                "hidden_realms": "秘境/隐藏空间",
             },
         },
         "society": {
@@ -1116,9 +1266,6 @@ JSON 格式：
                 "politics": "政治体制与权力架构",
                 "economy": "经济模式与贸易",
                 "class_system": "阶级/等级系统",
-                "power_structure": "明暗权力结构（明面与暗面的统治体系）",
-                "oppression_mechanism": "压迫/控制机制（强者如何压制弱者）",
-                "class_division": "阶层划分与流动壁垒",
             },
         },
         "culture": {
@@ -1127,8 +1274,6 @@ JSON 格式：
                 "history": "关键历史事件与时代背景",
                 "religion": "宗教信仰体系",
                 "taboos": "文化禁忌与违逆后果",
-                "worship": "崇拜对象与祭祀仪式",
-                "oaths_and_curses": "誓言体系与诅咒",
             },
         },
         "daily_life": {
@@ -1137,10 +1282,6 @@ JSON 格式：
                 "food_clothing": "衣食住行的日常细节",
                 "language_slang": "俚语、口音与方言",
                 "entertainment": "娱乐方式与消遣",
-                "survival_tactics": "底层/弱者的生存策略",
-                "market_reality": "市场/交易的真实状况",
-                "food_and_drink": "饮食文化与特色食物",
-                "slang_and_profanity": "粗话、黑话与市井语言",
             },
         },
     }
@@ -1468,33 +1609,19 @@ JSON 格式：
         "power_system": "力量体系",
         "physics_rules": "物理规律",
         "magic_tech": "魔法/科技",
-        "cost_and_limitation": "代价与限制",
-        "resource_scarcity": "稀缺资源",
         "terrain": "地形",
         "climate": "气候",
         "resources": "资源",
         "ecology": "生态",
-        "forbidden_zones": "禁区",
-        "urban_core": "核心城市",
-        "hidden_realms": "秘境",
         "politics": "政治体制",
         "economy": "经济模式",
         "class_system": "阶级系统",
-        "power_structure": "权力结构",
-        "oppression_mechanism": "压迫机制",
-        "class_division": "阶层划分",
         "history": "历史事件",
         "religion": "宗教信仰",
         "taboos": "文化禁忌",
-        "worship": "崇拜与祭祀",
-        "oaths_and_curses": "誓言与诅咒",
         "food_clothing": "衣食住行",
         "language_slang": "俚语与口音",
         "entertainment": "娱乐方式",
-        "survival_tactics": "生存策略",
-        "market_reality": "市场状况",
-        "food_and_drink": "饮食文化",
-        "slang_and_profanity": "粗话与黑话",
     }
 
     async def _generate_characters(self, premise: str, target_chapters: int, worldbuilding: Dict[str, Any]) -> Dict[str, Any]:
@@ -1979,4 +2106,3 @@ JSON 格式：
                         logger.info(f"Created triple: {loc_data['name']} -{predicate}-> {target_name}")
                     except Exception as e:
                         logger.error(f"Failed to save triple: {e}")
-

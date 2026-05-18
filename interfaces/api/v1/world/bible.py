@@ -395,6 +395,7 @@ async def _sse_bible_generator(
                     dim_data = {}
 
                 if dim_data:
+                    dim_data = bible_generator._normalize_dimension_fields(dim_key, dim_data)[0]
                     accumulated_wb[dim_key] = dim_data
                     # 逐字段推送完整的字段值（前端更新最终状态）
                     for field_key, field_value in dim_data.items():

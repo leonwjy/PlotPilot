@@ -1,6 +1,6 @@
-version: 5.1.2-score-aligned-full-chain
+version: 5.1.4-worldbuilding-schema-lock
 name: PlotPilot 内置
 description: CPMS v5 统一提示词库 — 全节点中文提示词、统一注册表、消除硬编码
 author: PlotPilot Team
 engine: jinja2
-changelog: 'v5.1.2: 全链路评分对齐 — 在5.1.1基础上补充前800字名词密度、不是是句式预算、爽点反馈链、结构性Anti-AI和角色行动锁二次收敛规则'
+changelog: 'v5.1.4: 世界观字段架构锁定 — 世界观维度生成只允许项目表结构白名单字段，自造概念只能进入字段内容；保存前校验缺失字段并补充生成，避免世界观内容无法落库'
