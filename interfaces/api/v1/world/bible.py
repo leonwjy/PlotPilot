@@ -425,6 +425,21 @@ async def _sse_bible_generator(
             yield _sse_fmt("phase", {"phase": "characters", "message": "AI 正在生成主要角色..."})
             await asyncio.sleep(0)
 
+            # 重新生成人物前，先清空旧人物，避免重复 ID 导致整轮被静默跳过。
+            try:
+                existing_bible = bible_generator.bible_service.get_bible_by_novel(novel_id)
+                if existing_bible:
+                    bible_generator.bible_service.update_bible(
+                        novel_id=novel_id,
+                        characters=[],
+                        world_settings=list(existing_bible.world_settings or []),
+                        locations=list(existing_bible.locations or []),
+                        timeline_notes=list(existing_bible.timeline_notes or []),
+                        style_notes=list(existing_bible.style_notes or []),
+                    )
+            except Exception as e:
+                logger.warning("Character SSE reset failed novel=%s reason=%s", novel_id, e)
+
             existing_worldbuilding = bible_generator._load_worldbuilding(novel_id)
             chars_payload = []
             character_ids = []
@@ -437,6 +452,9 @@ async def _sse_bible_generator(
                     char_data = item["content"]
                     chars_payload.append(char_data)
                     idx = item["index"]
+                    role_text = str(char_data.get("role") or "")
+                    desc_text = str(char_data.get("description") or "")
+                    combined_desc = f"{role_text} - {desc_text}"
                     yield _sse_fmt("phase", {"phase": f"character_{idx}", "message": f"正在生成角色：{char_data.get('name', '...')}..."})
                     yield _sse_fmt("data", {
                         "type": "character",
@@ -453,12 +471,17 @@ async def _sse_bible_generator(
                             novel_id=novel_id,
                             character_id=character_id,
                             name=char_data["name"],
-                            description=f"{char_data.get('role', '')} - {char_data.get('description', '')}",
+                            description=combined_desc,
                             relationships=char_data.get("relationships", []),
                         )
                         character_ids.append((character_id, char_data))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(
+                            "Character SSE save skipped novel=%s character_id=%s reason=%s",
+                            novel_id,
+                            character_id,
+                            e,
+                        )
                 elif item["type"] == "chunk":
                     # 透传 LLM 原始 chunk（前端可用于打字效果）
                     yield _sse_fmt("data", {
