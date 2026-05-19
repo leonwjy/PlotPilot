@@ -4,7 +4,6 @@
 """
 import asyncio
 import logging
-import re
 from typing import Tuple, Dict, Any, AsyncIterator, Optional, List, Callable, Awaitable
 from application.engine.services.context_builder import ContextBuilder
 from application.analyst.services.state_extractor import StateExtractor
@@ -57,7 +56,6 @@ def _beats_for_sse(beats: List[Any]) -> List[Dict[str, Any]]:
                 "description": desc,
                 "target_words": int(getattr(beat, "target_words", 0) or 0),
                 "focus": (getattr(beat, "focus", None) or "pacing"),
-                "beat_type": getattr(beat, "beat_type", "") or "progress",
                 "location_id": getattr(beat, "location_id", "") or "",
             }
         )
@@ -809,7 +807,6 @@ class AutoNovelGenerationWorkflow:
                     "description": beat.description,
                     "target_words": beat.target_words,
                     "focus": beat.focus,
-                    "beat_type": getattr(beat, "beat_type", "") or "progress",
                     "location_id": getattr(beat, "location_id", "") or "",
                 }
                 for beat in beats
@@ -1668,19 +1665,6 @@ class AutoNovelGenerationWorkflow:
         if beat_mode:
             bi = beat_index if beat_index is not None else 0
             tb = total_beats if total_beats is not None else 1
-            beat_type = ""
-            beat_acceptance = ""
-            beat_forbidden = ""
-            if beat_prompt:
-                m = re.search(r"^\s*【节拍类型】\s*(.+)$", beat_prompt, re.M)
-                if m:
-                    beat_type = m.group(1).strip()
-                m = re.search(r"^\s*【本拍必须兑现】\s*(.+)$", beat_prompt, re.M)
-                if m:
-                    beat_acceptance = m.group(1).strip()
-                m = re.search(r"^\s*【禁止漂移】\s*(.+)$", beat_prompt, re.M)
-                if m:
-                    beat_forbidden = m.group(1).strip()
             beat_tail = (
                 "本段只写该节拍对应正文，紧接上文已写正文之后继续，衔接自然。"
                 if prior_in_chapter
@@ -1715,15 +1699,6 @@ class AutoNovelGenerationWorkflow:
 {(beat_prompt or '').strip()}
 
 {beat_tail}{transition_guide}{battle_hint}"""
-            if beat_type or beat_acceptance or beat_forbidden:
-                node_card = []
-                if beat_type:
-                    node_card.append(f"【节拍类型】{beat_type}")
-                if beat_acceptance:
-                    node_card.append(f"【本拍必须兑现】{beat_acceptance}")
-                if beat_forbidden:
-                    node_card.append(f"【禁止漂移】{beat_forbidden}")
-                user_message += "\n\n【节点卡】\n" + "\n".join(node_card)
 
         # 重写指导注入：告知 AI 这是重写任务，并提供改进方向
         if regeneration_guidance and regeneration_guidance.strip():

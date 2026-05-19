@@ -2414,7 +2414,6 @@ class AutopilotDaemon:
                     "description": getattr(b, "description", "") or "",
                     "target_words": int(getattr(b, "target_words", 0) or 0),
                     "focus": getattr(b, "focus", "") or "pacing",
-                    "beat_type": getattr(b, "beat_type", "") or "progress",
                     "location_id": getattr(b, "location_id", "") or "",
                 }
             )
@@ -4179,3 +4178,4 @@ class AutopilotDaemon:
         
         except Exception as e:
             logger.warning(f"[{novel.novel_id}] 摘要生成失败: {e}")
+

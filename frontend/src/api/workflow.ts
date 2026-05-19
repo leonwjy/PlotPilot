@@ -217,7 +217,6 @@ export interface StreamGeneratedBeat {
   description: string
   target_words: number
   focus: string
-  beat_type?: string
   location_id?: string
 }
 
@@ -243,7 +242,6 @@ export function parseStreamGeneratedBeats(raw: unknown): StreamGeneratedBeat[] {
       description,
       target_words,
       focus: String(r.focus ?? r.type ?? 'pacing').trim() || 'pacing',
-      beat_type: typeof r.beat_type === 'string' ? r.beat_type : undefined,
       location_id: typeof r.location_id === 'string' ? r.location_id : undefined,
     })
   }
