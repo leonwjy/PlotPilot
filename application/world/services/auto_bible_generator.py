@@ -182,6 +182,12 @@ _BIBLE_CHARACTERS_NAMING_USER_SUFFIX = (
     "若是中式/华语世界，再使用中文姓名。"
 )
 
+_BIBLE_CHARACTERS_CHINESE_NAME_SUFFIX = (
+    "\n\n【中文姓名补充规则】"
+    "仅当世界观是中式/华语语境时，才使用中文姓氏抽卡规则；"
+    "若世界观偏西幻，请忽略所有中文单姓/复姓卡池，不要混用中文姓氏结构。"
+)
+
 _FALLBACK_BIBLE_LOCATIONS_SYSTEM = """你是资深网文策划编辑。基于已有世界观和人物生成完整地图。
 
 要求：
@@ -242,10 +248,39 @@ def _build_description_from_character_payload(char_data: Dict[str, Any]) -> str:
     return "；".join(p for p in parts if p)
 
 
+_CHARACTER_NAME_CANDIDATE_RE = re.compile(r"^[\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z·・'’\-]{1,20}$")
+
+
+def _infer_character_name_from_payload(char_data: Dict[str, Any]) -> str:
+    name = _collapse_text(char_data.get("name"))
+    if name:
+        return name
+
+    for key in ("description", "root", "web"):
+        blob = _collapse_text(char_data.get(key))
+        if not blob:
+            continue
+        first = re.split(r"[，,。；;：:\n]", blob, maxsplit=1)[0].strip()
+        if first and _CHARACTER_NAME_CANDIDATE_RE.match(first):
+            return first
+    return ""
+
+
 def _normalize_character_payload(char_data: Dict[str, Any]) -> Dict[str, Any]:
     normalized = dict(char_data or {})
+    raw_description = _collapse_text(normalized.get("description"))
     normalized["role"] = _infer_role_from_character_payload(normalized)
     normalized["description"] = _build_description_from_character_payload(normalized)
+    if raw_description and not _collapse_text(normalized.get("description")):
+        normalized["description"] = raw_description
+
+    inferred_name = _infer_character_name_from_payload(normalized)
+    if inferred_name and not _collapse_text(normalized.get("name")):
+        normalized["name"] = inferred_name
+        if raw_description.startswith(inferred_name):
+            trimmed = raw_description[len(inferred_name):].lstrip(" ，,。；;：:\n")
+            if trimmed:
+                normalized["description"] = trimmed
 
     relationships = normalized.get("relationships")
     if not relationships and _collapse_text(normalized.get("web")):
@@ -291,6 +326,7 @@ def _build_character_name_style_instruction(name_style: str) -> str:
         return (
             "\n\n【命名风格锁定：西幻中文译名】\n"
             "- 本作世界观偏西方奇幻 / 剑与魔法，姓名必须采用中文可读的西幻译名或音译名。\n"
+            "- 忽略任何中文姓氏抽卡规则，不要从中文单姓/复姓池中选姓。\n"
             "- 禁止使用欧阳、司徒、南宫、诸葛、闻人、端木等中文复姓；禁止使用顾、苏、沈、萧等中文姓氏结构。\n"
             "- 禁止出现“中文复姓 + · + 音译名”的混搭格式，例如“南宫·薇奥莱特”“司徒·塞拉芬”。\n"
             "- 允许的风格示例：阿尔萨斯、伊琳娜、塞拉芬、维奥拉、卡洛斯、雷恩、奥菲莉娅、莱昂、艾德温、伊莎贝拉。\n"
@@ -304,6 +340,18 @@ def _build_character_name_style_instruction(name_style: str) -> str:
     return (
         "\n\n【命名】请根据世界观自行选择最贴合的命名风格；若偏西幻，输出中文可读的西幻译名，若偏中式，输出中文姓名。\n"
     )
+
+
+def _build_character_prompt_suffix(name_style: str) -> str:
+    base = _BIBLE_CHARACTERS_NAMING_USER_SUFFIX
+    if name_style == "chinese":
+        return base + _BIBLE_CHARACTERS_CHINESE_NAME_SUFFIX
+    if name_style == "western_fantasy_zh":
+        return (
+            "\n\n【命名补充】西幻世界只允许中文可读的西式译名/音译名；"
+            "不要套用中文姓氏抽卡池，不要使用中文复姓，也不要使用“中文姓 + · + 西式名”的混搭。"
+        )
+    return base
 
 
 def parse_json_from_response(rsp: str):
@@ -1767,6 +1815,7 @@ JSON 格式：
         wb_summary = self._summarize_worldbuilding(worldbuilding)
         name_style = _infer_character_name_style(premise, wb_summary)
         name_style_instruction = _build_character_name_style_instruction(name_style)
+        name_style_suffix = _build_character_prompt_suffix(name_style)
 
         from infrastructure.ai.prompt_utils import get_prompt_system
         system_prompt = get_prompt_system(BIBLE_CHARACTERS, fallback=_FALLBACK_BIBLE_CHARACTERS_SYSTEM)
@@ -1819,7 +1868,7 @@ JSON 格式：
 {{
   "characters": []
 }}
-```""" + _BIBLE_CHARACTERS_NAMING_USER_SUFFIX
+        ```""" + name_style_suffix
 
         return await self._call_llm_and_parse_with_retry(system_prompt, user_prompt)
 
@@ -1842,6 +1891,7 @@ JSON 格式：
         wb_summary = self._summarize_worldbuilding(worldbuilding)
         name_style = _infer_character_name_style(premise, wb_summary)
         name_style_instruction = _build_character_name_style_instruction(name_style)
+        name_style_suffix = _build_character_prompt_suffix(name_style)
         from infrastructure.ai.prompt_utils import get_prompt_system
         system_prompt = get_prompt_system(BIBLE_CHARACTERS, fallback=_FALLBACK_BIBLE_CHARACTERS_SYSTEM)
         user_prompt = f"""故事创意：{premise}
@@ -1863,7 +1913,7 @@ JSON 格式：
 {{
   "characters": []
 }}
-```""" + _BIBLE_CHARACTERS_NAMING_USER_SUFFIX
+        ```""" + name_style_suffix
         prompt = Prompt(system=system_prompt, user=user_prompt)
         config = GenerationConfig(max_tokens=4096, temperature=0.7)
 
@@ -1883,6 +1933,18 @@ JSON 格式：
                     char_data = _normalize_character_payload(char_data)
                     yield {"type": "character", "index": char_index, "content": char_data}
                     char_index += 1
+
+            # 流正常结束但增量解析未抠出任何角色时，兜底整包解析一次。
+            if char_index == 0 and buf.strip():
+                try:
+                    full = _sanitize_llm_json_output(buf)
+                    result = _parse_llm_json_to_dict(full) if full else {}
+                    for ch in result.get("characters", []):
+                        ch = _normalize_character_payload(ch)
+                        yield {"type": "character", "index": char_index, "content": ch}
+                        char_index += 1
+                except Exception as e:
+                    logger.warning("Character stream final parse failed: %s", e)
 
         except Exception as e:
             logger.error("Stream generate characters failed: %s", e)
@@ -2006,6 +2068,17 @@ JSON 格式：
                     loc_data, buf = parsed
                     yield {"type": "location", "index": loc_index, "content": loc_data}
                     loc_index += 1
+
+            # 流正常结束但增量解析未抠出任何地点时，兜底整包解析一次。
+            if loc_index == 0 and buf.strip():
+                try:
+                    full = _sanitize_llm_json_output(buf)
+                    result = _parse_llm_json_to_dict(full) if full else {}
+                    for loc in result.get("locations", []):
+                        yield {"type": "location", "index": loc_index, "content": loc}
+                        loc_index += 1
+                except Exception as e:
+                    logger.warning("Location stream final parse failed: %s", e)
 
         except Exception as e:
             logger.error("Stream generate locations failed: %s", e)
