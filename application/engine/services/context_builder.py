@@ -45,10 +45,16 @@ class Beat:
     scene_goal: str = ""  # 场景目标（从规划阶段继承）
     transition_from_prev: str = ""  # 🔗 从上一节拍如何过渡（对话延续/动作接续/情绪过渡/场景切换）
     location_id: str = ""  # 微观坐标（由 ATG visit_sequence 绑定；无 ATG 时为空）
+    beat_type: str = "progress"  # 节拍类型：setup / progress / confrontation / reveal / payoff / hook
+    must_keep: bool = False  # 是否为章纲核心节点；核心节点不得被粗暴吞并
+    acceptance_criteria: List[str] = None  # 本节拍必须兑现的要点
+    forbidden_drift: str = ""  # 本节拍最容易滑向的空转方式
 
     def __post_init__(self):
         if self.expansion_hints is None:
             self.expansion_hints = []
+        if self.acceptance_criteria is None:
+            self.acceptance_criteria = []
 
 
 class ContextBuilder:
@@ -297,10 +303,35 @@ class ContextBuilder:
         ],
     }
 
-    # 节拍数量上限：拍数过多时每拍字数太少，模型倾向用八股堆满
+    # 节拍数量上限：全局硬帽，实际以区间策略为准
     MAX_BEATS = 8
-    # 每拍最低字数：低于此值将合并相邻拍（略抬高以减少「碎拍」内心戏凑数）
-    MIN_BEAT_WORDS = 800
+    # 章节目标字数 -> 节拍上限
+    CHAPTER_BEAT_POLICY = [
+        {"min_words": 0, "max_words": 900, "max_beats": 2},
+        {"min_words": 901, "max_words": 1500, "max_beats": 3},
+        {"min_words": 1501, "max_words": 2800, "max_beats": 4},
+        {"min_words": 2801, "max_words": 4000, "max_beats": 5},
+        {"min_words": 4001, "max_words": 6000, "max_beats": 6},
+        {"min_words": 6001, "max_words": 99999, "max_beats": 7},
+    ]
+    # 按节拍类型控制“相对篇幅权重”，实际字数应随整章目标字数等比放大
+    BEAT_TYPE_WORD_WEIGHTS = {
+        "setup": 0.9,
+        "progress": 1.0,
+        "confrontation": 1.22,
+        "reveal": 1.24,
+        "payoff": 0.92,
+        "hook": 0.82,
+    }
+    # 动态字数边界：相对于“本章平均每拍字数”的倍率，而不是固定绝对字数
+    BEAT_TYPE_DYNAMIC_RATIOS = {
+        "setup": (0.65, 1.05),
+        "progress": (0.80, 1.20),
+        "confrontation": (0.90, 1.55),
+        "reveal": (0.90, 1.60),
+        "payoff": (0.70, 1.10),
+        "hook": (0.55, 1.00),
+    }
 
     def magnify_outline_to_beats(
         self,
@@ -373,6 +404,9 @@ class ContextBuilder:
             transition = str(trans).strip() if trans else ""
             loc_id = ext.get("location_id")
             location_id = str(loc_id).strip() if isinstance(loc_id, str) and loc_id.strip() else ""
+            beat_type = self._infer_beat_type(intent, ext)
+            acceptance = self._build_acceptance_criteria(intent, beat_type)
+            forbidden_drift = self._build_forbidden_drift(beat_type)
 
             beats.append(
                 Beat(
@@ -387,6 +421,10 @@ class ContextBuilder:
                     scene_goal=intent,
                     transition_from_prev=transition,
                     location_id=location_id,
+                    beat_type=beat_type,
+                    must_keep=True,
+                    acceptance_criteria=acceptance,
+                    forbidden_drift=forbidden_drift,
                 )
             )
         return beats
@@ -413,50 +451,31 @@ class ContextBuilder:
         assign_visit_locations_to_beats(beats, seq)
 
     def _cap_and_merge_beats(self, beats: List[Beat], target_chapter_words: int) -> List[Beat]:
-        """控制节拍数量与最低字数。
+        """控制节拍数量与字数分布。
 
-        策略：
-        1. 若 len(beats) > MAX_BEATS，按均分合并使总数降到 MAX_BEATS。
-        2. 若某拍 target_words < MIN_BEAT_WORDS，与下一拍合并（最后一拍与前一拍合并）。
-        3. 合并后重新均摊 target_words 使总字数维持接近 target_chapter_words。
+        新策略：
+        1. 章节目标字数先决定本章允许的最大拍数。
+        2. 优先保留 must_keep 的章纲核心节点；不得因最低字数阈值直接吞并。
+        3. 重新分配各拍字数时，按 beat_type 约束详略，而不是平均使力。
         """
         if not beats:
             return beats
 
-        # 步骤 1：超过 MAX_BEATS 时按组合并
-        while len(beats) > self.MAX_BEATS:
-            # 找到相邻两拍中 target_words 之和最小的组合，合并掉一拍
-            min_sum = None
-            merge_idx = 0
-            for i in range(len(beats) - 1):
-                s = beats[i].target_words + beats[i + 1].target_words
-                if min_sum is None or s < min_sum:
-                    min_sum = s
-                    merge_idx = i
+        max_beats = self._resolve_max_beats(target_chapter_words)
+
+        # 先按章节容量压拍数，但尽量不动 must_keep
+        while len(beats) > max_beats:
+            merge_idx = self._pick_merge_index(beats, allow_force=True)
+            if merge_idx is None:
+                break
             beats = self._merge_two_beats(beats, merge_idx)
 
-        # 步骤 2：每拍 < MIN_BEAT_WORDS 时合并
-        changed = True
-        while changed and len(beats) > 1:
-            changed = False
-            for i, b in enumerate(beats):
-                if b.target_words < self.MIN_BEAT_WORDS:
-                    # 与前一拍或后一拍合并（优先后一拍）
-                    merge_idx = i if i < len(beats) - 1 else i - 1
-                    beats = self._merge_two_beats(beats, merge_idx)
-                    changed = True
-                    break
-
-        # 步骤 3：重新均摊 target_words（等比缩放保持各拍权重）
-        total_assigned = sum(b.target_words for b in beats)
-        if total_assigned > 0 and abs(total_assigned - target_chapter_words) > 200:
-            ratio = target_chapter_words / total_assigned
-            for b in beats:
-                b.target_words = max(self.MIN_BEAT_WORDS, int(b.target_words * ratio))
+        self._rebalance_target_words(beats, target_chapter_words)
 
         logger.info(
-            "节拍整形：%d 拍，各拍字数=%s，总目标=%d",
+            "节拍整形：%d 拍（上限=%d），各拍字数=%s，总目标=%d",
             len(beats),
+            max_beats,
             [b.target_words for b in beats],
             sum(b.target_words for b in beats),
         )
@@ -473,6 +492,10 @@ class ContextBuilder:
             scene_goal=f"{a.scene_goal or ''} {b.scene_goal or ''}".strip(),
             transition_from_prev=a.transition_from_prev or '',
             location_id=(a.location_id or b.location_id or "").strip(),
+            beat_type=self._merge_beat_types(a.beat_type, b.beat_type),
+            must_keep=bool(a.must_keep or b.must_keep),
+            acceptance_criteria=list(dict.fromkeys((a.acceptance_criteria or []) + (b.acceptance_criteria or [])))[:6],
+            forbidden_drift=a.forbidden_drift or b.forbidden_drift,
         )
         return beats[:idx] + [merged] + beats[idx + 2:]
 
@@ -506,6 +529,10 @@ class ContextBuilder:
                 expansion_hints=expansion_hints,
                 scene_goal=goal,
                 transition_from_prev=getattr(scene, 'transition_from_prev', '') or '',
+                beat_type=self._infer_beat_type(goal or title, {"tone": tone}),
+                must_keep=True,
+                acceptance_criteria=self._build_acceptance_criteria(goal or title, self._infer_beat_type(goal or title, {"tone": tone})),
+                forbidden_drift=self._build_forbidden_drift(self._infer_beat_type(goal or title, {"tone": tone})),
             )
             beats.append(beat)
 
@@ -599,6 +626,10 @@ class ContextBuilder:
                     target_words=w,
                     focus=focus,
                     expansion_hints=self._generate_expansion_hints(focus, w),
+                    beat_type=self._infer_beat_type(seg),
+                    must_keep=True,
+                    acceptance_criteria=self._build_acceptance_criteria(seg, self._infer_beat_type(seg)),
+                    forbidden_drift=self._build_forbidden_drift(self._infer_beat_type(seg)),
                 )
             )
         return beats
@@ -634,24 +665,28 @@ class ContextBuilder:
                     target_words=int(base_beat_words * 1.2),
                     focus="hook",
                     expansion_hints=self._generate_expansion_hints("hook", int(base_beat_words * 1.2)),
+                    beat_type="hook",
                 ),
                 Beat(
                     description="剧情引入及人物初步互动：展现主角特质并暗示即将发生的事件",
                     target_words=int(base_beat_words * 1.5),
                     focus="character_intro",
                     expansion_hints=self._generate_expansion_hints("character_intro", int(base_beat_words * 1.5)),
+                    beat_type="progress",
                 ),
                 Beat(
                     description="世界观或当前场景细节：通过具体行动展现，不用抽象叙述",
                     target_words=int(base_beat_words * 1.3),
                     focus="sensory",
                     expansion_hints=self._generate_expansion_hints("sensory", int(base_beat_words * 1.3)),
+                    beat_type="setup",
                 ),
                 Beat(
                     description="埋下后续剧情伏笔或抛出首个悬念：铺垫第二章",
                     target_words=int(base_beat_words * 1.0),
                     focus="suspense",
                     expansion_hints=self._generate_expansion_hints("suspense", int(base_beat_words * 1.0)),
+                    beat_type="hook",
                 ),
             ]
         elif chapter_number == 2:
@@ -661,24 +696,28 @@ class ContextBuilder:
                     target_words=int(base_beat_words * 1.3),
                     focus="dialogue",
                     expansion_hints=self._generate_expansion_hints("dialogue", int(base_beat_words * 1.3)),
+                    beat_type="progress",
                 ),
                 Beat(
                     description="推进主要情节线：引入新的次要冲突或阻碍",
                     target_words=int(base_beat_words * 1.8),
                     focus="action",
                     expansion_hints=self._generate_expansion_hints("action", int(base_beat_words * 1.8)),
+                    beat_type="confrontation",
                 ),
                 Beat(
                     description="情绪细节及内心活动：展示人物面对变故的真实反映",
                     target_words=int(base_beat_words * 1.0),
                     focus="emotion",
                     expansion_hints=self._generate_expansion_hints("emotion", int(base_beat_words * 1.0)),
+                    beat_type="payoff",
                 ),
                 Beat(
                     description="为第三章冲突高潮做气氛铺垫",
                     target_words=int(base_beat_words * 0.8),
                     focus="suspense",
                     expansion_hints=self._generate_expansion_hints("suspense", int(base_beat_words * 0.8)),
+                    beat_type="hook",
                 ),
             ]
         elif chapter_number == 3:
@@ -688,24 +727,28 @@ class ContextBuilder:
                     target_words=int(base_beat_words * 1.0),
                     focus="sensory",
                     expansion_hints=self._generate_expansion_hints("sensory", int(base_beat_words * 1.0)),
+                    beat_type="setup",
                 ),
                 Beat(
                     description="冲突爆发/悬念高潮：激烈的动作或对峙",
                     target_words=int(base_beat_words * 2.0),
                     focus="action",
                     expansion_hints=self._generate_expansion_hints("action", int(base_beat_words * 2.0)),
+                    beat_type="confrontation",
                 ),
                 Beat(
                     description="暴露深层问题或引出更高层面人物背景",
                     target_words=int(base_beat_words * 1.3),
                     focus="emotion",
                     expansion_hints=self._generate_expansion_hints("emotion", int(base_beat_words * 1.3)),
+                    beat_type="reveal",
                 ),
                 Beat(
                     description="建立长线悬念结局：为整卷后续发展铺设巨大好奇心",
                     target_words=int(base_beat_words * 0.7),
                     focus="suspense",
                     expansion_hints=self._generate_expansion_hints("suspense", int(base_beat_words * 0.7)),
+                    beat_type="hook",
                 ),
             ]
         # 根据大纲关键词推断
@@ -868,26 +911,193 @@ class ContextBuilder:
                 target_words=base_beat_words,
                 focus="sensory",
                 expansion_hints=self._generate_expansion_hints("sensory", base_beat_words),
+                beat_type="setup",
             ),
             Beat(
                 description="承：阻碍升级或对手施压，人物关系或信息出现新变化。",
                 target_words=base_beat_words,
                 focus="dialogue",
                 expansion_hints=self._generate_expansion_hints("dialogue", base_beat_words),
+                beat_type="progress",
             ),
             Beat(
-                description="转：主角做出选择、亮出底牌或发现盲点，情节出现可感知的转折。",
+                description="转：矛盾正面爆发或人物被迫对峙，局势进入高压状态。",
                 target_words=base_beat_words,
                 focus="action",
                 expansion_hints=self._generate_expansion_hints("action", base_beat_words),
+                beat_type="confrontation",
             ),
             Beat(
-                description="合：阶段性结果落地，同时抛出下一章钩子（勿提前剧透全书谜底）。",
+                description="合：阶段性结果或反馈落地，同时抛出下一章钩子（勿提前剧透全书谜底）。",
                 target_words=base_beat_words,
                 focus="suspense",
                 expansion_hints=self._generate_expansion_hints("suspense", base_beat_words),
+                beat_type="payoff",
+            ),
+            Beat(
+                description="尾钩：保留一个新问题、新代价或新目标，形成明确追读牵引。",
+                target_words=int(base_beat_words * 0.75),
+                focus="suspense",
+                expansion_hints=self._generate_expansion_hints("suspense", int(base_beat_words * 0.75)),
+                beat_type="hook",
             ),
         ]
+
+    def _resolve_max_beats(self, target_chapter_words: int) -> int:
+        for policy in self.CHAPTER_BEAT_POLICY:
+            if policy["min_words"] <= target_chapter_words <= policy["max_words"]:
+                return min(int(policy["max_beats"]), self.MAX_BEATS)
+        return self.MAX_BEATS
+
+    def _pick_merge_index(self, beats: List[Beat], allow_force: bool = False) -> Optional[int]:
+        min_sum = None
+        merge_idx: Optional[int] = None
+        for i in range(len(beats) - 1):
+            a = beats[i]
+            b = beats[i + 1]
+            if a.must_keep and b.must_keep and not allow_force:
+                continue
+            penalty = 0
+            if a.must_keep or b.must_keep:
+                penalty += 2_000
+            if a.beat_type in {"confrontation", "reveal"} or b.beat_type in {"confrontation", "reveal"}:
+                penalty += 5_000 if not allow_force else 2_500
+            if a.beat_type == "hook" and b.beat_type == "hook":
+                penalty += 800
+            s = a.target_words + b.target_words + penalty
+            if min_sum is None or s < min_sum:
+                min_sum = s
+                merge_idx = i
+        return merge_idx
+
+    def _rebalance_target_words(self, beats: List[Beat], target_chapter_words: int) -> None:
+        if not beats:
+            return
+        avg_words = max(1, int(target_chapter_words / max(len(beats), 1)))
+        weights: List[int] = []
+        for beat in beats:
+            weight = float(self.BEAT_TYPE_WORD_WEIGHTS.get(beat.beat_type, self.BEAT_TYPE_WORD_WEIGHTS["progress"]))
+            if beat.must_keep:
+                weight *= 1.05
+            weights.append(weight)
+
+        total_weight = float(sum(weights) or 1.0)
+        mins: List[int] = []
+        maxs: List[int] = []
+        assigned: List[int] = []
+        for idx, beat in enumerate(beats):
+            lo_ratio, hi_ratio = self.BEAT_TYPE_DYNAMIC_RATIOS.get(
+                beat.beat_type,
+                self.BEAT_TYPE_DYNAMIC_RATIOS["progress"],
+            )
+            min_words = max(1, int(avg_words * lo_ratio))
+            max_words = max(min_words, int(avg_words * hi_ratio))
+            target = int(round(target_chapter_words * weights[idx] / total_weight))
+            mins.append(min_words)
+            maxs.append(max_words)
+            assigned.append(max(min_words, min(max_words, target)))
+
+        current_total = sum(assigned)
+        delta = target_chapter_words - current_total
+
+        if delta > 0:
+            room_total = sum(maxs[i] - assigned[i] for i in range(len(beats)))
+            if room_total > 0:
+                for i in range(len(beats)):
+                    room = maxs[i] - assigned[i]
+                    if room <= 0:
+                        continue
+                    add = min(room, int(delta * room / room_total))
+                    assigned[i] += add
+                delta = target_chapter_words - sum(assigned)
+            while delta > 0:
+                progress = False
+                for i in sorted(range(len(beats)), key=lambda x: (weights[x], maxs[x] - assigned[x]), reverse=True):
+                    room = maxs[i] - assigned[i]
+                    if room <= 0:
+                        continue
+                    add = min(room, delta)
+                    assigned[i] += add
+                    delta -= add
+                    progress = True
+                    if delta == 0:
+                        break
+                if not progress:
+                    break
+        elif delta < 0:
+            deficit = -delta
+            reducible_total = sum(assigned[i] - mins[i] for i in range(len(beats)))
+            if reducible_total > 0:
+                for i in range(len(beats)):
+                    reducible = assigned[i] - mins[i]
+                    if reducible <= 0:
+                        continue
+                    cut = min(reducible, int(deficit * reducible / reducible_total))
+                    assigned[i] -= cut
+                deficit = sum(assigned) - target_chapter_words
+            while deficit > 0:
+                progress = False
+                for i in sorted(range(len(beats)), key=lambda x: (assigned[x] - mins[x], -weights[x]), reverse=True):
+                    reducible = assigned[i] - mins[i]
+                    if reducible <= 0:
+                        continue
+                    cut = min(reducible, deficit)
+                    assigned[i] -= cut
+                    deficit -= cut
+                    progress = True
+                    if deficit == 0:
+                        break
+                if not progress:
+                    break
+
+        for idx, beat in enumerate(beats):
+            beat.target_words = assigned[idx]
+
+    def _merge_beat_types(self, left: str, right: str) -> str:
+        priority = {"setup": 1, "progress": 2, "payoff": 3, "hook": 4, "confrontation": 5, "reveal": 6}
+        return left if priority.get(left, 0) >= priority.get(right, 0) else right
+
+    def _infer_beat_type(self, text: str, ext: Optional[Dict[str, Any]] = None) -> str:
+        combined = f"{text or ''} {ext or {}}"
+        if any(kw in combined for kw in ["觉醒", "揭示", "揭露", "真相", "记忆涌入", "规则丝线", "答案浮现", "看见本质"]):
+            return "reveal"
+        if any(kw in combined for kw in ["对峙", "冲突", "摊牌", "爆发", "第一鞭", "反击", "高潮", "对决", "施压", "鞭刑"]):
+            return "confrontation"
+        if any(kw in combined for kw in ["回报", "反馈", "结果", "余波", "代价", "后果", "落地", "回应", "接受现实"]):
+            return "payoff"
+        if any(kw in combined for kw in ["悬念", "钩子", "伏笔", "铺垫第二章", "留下问题"]):
+            return "hook"
+        if any(kw in combined for kw in ["开篇", "交代", "场景", "状态", "气氛", "承接"]):
+            return "setup"
+        return "progress"
+
+    def _build_acceptance_criteria(self, intent: str, beat_type: str) -> List[str]:
+        criteria = [
+            "本拍必须出现至少一个可见动作或有信息的对白。",
+            "本拍必须带来一条新的事实、态度或局势变化。",
+        ]
+        if beat_type == "confrontation":
+            criteria.append("本拍必须写出谁与谁正面碰撞、如何施压、局势如何升级。")
+        if beat_type == "reveal":
+            criteria.append("本拍必须把新真相、新认知或新规则真正揭示出来，不能只写预感。")
+        if beat_type == "payoff":
+            criteria.append("本拍必须交代前一冲突带来的结果、代价或态度变化，不能只硬切下个事件。")
+        if beat_type == "hook":
+            criteria.append("本拍结尾必须留下明确追读牵引，不能平收。")
+        if "觉醒" in (intent or "") or "真相" in (intent or ""):
+            criteria.append("章纲承诺的核心变化必须真正发生，不能停在临界点前。")
+        return criteria[:4]
+
+    def _build_forbidden_drift(self, beat_type: str) -> str:
+        mapping = {
+            "setup": "不要把篇幅耗在纯光影、气味、材质堆叠上；场景细节必须服务行动或判断。",
+            "progress": "不要只写情绪起伏而没有目标推进、阻碍升级或信息变化。",
+            "confrontation": "不要只写疼痛、震撼、热流、电流等体感；必须落成对抗动作、压迫关系或局势升级。",
+            "reveal": "不要只把答案含糊带过；必须明确写出被看见、被理解或被揭开的内容。",
+            "payoff": "不要把结果一笔带过；前面铺的冲突必须有可见反馈、代价或态度变化。",
+            "hook": "不要在本拍末尾解释完所有问题；保留新牵引，但不能空喊悬念。",
+        }
+        return mapping.get(beat_type, "")
 
     # 节拍聚焦指令：CPMS 节点 beat-focus-instructions（prompt_packages）
     # 通过 PromptRegistry 统一读取，不再在此硬编码
@@ -943,6 +1153,16 @@ class ContextBuilder:
             },
         )
         prompt = (rendered.user if rendered else "") or ""
+
+        beat_card_parts = [
+            f"【节拍类型】{beat.beat_type}",
+            f"【建议字数】约 {beat.target_words} 字",
+        ]
+        if beat.acceptance_criteria:
+            beat_card_parts.append(f"【本拍必须兑现】{'；'.join(beat.acceptance_criteria)}")
+        if beat.forbidden_drift:
+            beat_card_parts.append(f"【禁止漂移】{beat.forbidden_drift}")
+        prompt = "\n".join(beat_card_parts) + "\n\n" + prompt
 
         # 注入扩写维度
         if expansion_block:

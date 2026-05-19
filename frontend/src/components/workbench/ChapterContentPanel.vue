@@ -77,8 +77,8 @@
               <n-space v-if="microBeats.length" vertical :size="8" style="margin-top: 12px">
                 <div v-for="(beat, i) in microBeats" :key="i" class="micro-beat-item">
                   <div class="micro-beat-header">
-                    <n-tag :type="getBeatTypeColor(beat.focus)" size="small" round>
-                      {{ beatFocusLabel(beat.focus) }}
+                    <n-tag :type="getBeatTypeColor(beat.focus, beat.beat_type)" size="small" round>
+                      {{ beatFocusLabel(beat.focus, beat.beat_type) }}
                     </n-tag>
                     <n-text strong style="margin-left: 8px">节拍 {{ i + 1 }}</n-text>
                     <n-text
@@ -296,6 +296,7 @@ interface MicroBeat {
   description: string
   target_words: number
   focus: string
+  beat_type?: string
 }
 
 const BEAT_FOCUS_LABELS: Record<string, string> = {
@@ -309,6 +310,15 @@ const BEAT_FOCUS_LABELS: Record<string, string> = {
   transition: '过渡',
 }
 
+const BEAT_TYPE_LABELS: Record<string, string> = {
+  setup: '过渡/铺垫拍',
+  progress: '常规推进拍',
+  confrontation: '冲突/对峙拍',
+  reveal: '觉醒/揭示拍',
+  payoff: '回报/反馈拍',
+  hook: '钩子/悬念拍',
+}
+
 function formatBeatDescription(raw: string): string {
   const s = String(raw || '').trim()
   const prefix = '【章纲节选·须落实】'
@@ -318,7 +328,9 @@ function formatBeatDescription(raw: string): string {
   return s.slice(nl + 1).trim() || s
 }
 
-function beatFocusLabel(focus: string): string {
+function beatFocusLabel(focus: string, beatType?: string): string {
+  const typeKey = (beatType || '').trim()
+  if (BEAT_TYPE_LABELS[typeKey]) return BEAT_TYPE_LABELS[typeKey]
   const key = (focus || '').trim()
   if (BEAT_FOCUS_LABELS[key]) return BEAT_FOCUS_LABELS[key]
   if (!key) return '节拍'
@@ -331,7 +343,7 @@ function normalizeMicroBeatItems(raw: unknown[]): MicroBeat[] {
     if (item == null) continue
     if (typeof item === 'string') {
       const d = item.trim()
-      if (d) out.push({ description: d, target_words: 0, focus: 'pacing' })
+      if (d) out.push({ description: d, target_words: 0, focus: 'pacing', beat_type: 'progress' })
       continue
     }
     if (typeof item === 'object' && !Array.isArray(item)) {
@@ -346,7 +358,8 @@ function normalizeMicroBeatItems(raw: unknown[]): MicroBeat[] {
             ? Number(tw)
             : 0
       const focus = String(o.focus ?? o.type ?? 'pacing').trim() || 'pacing'
-      out.push({ description: desc, target_words: targetWords, focus })
+      const beatType = String(o.beat_type ?? '').trim() || undefined
+      out.push({ description: desc, target_words: targetWords, focus, beat_type: beatType })
     }
   }
   return out
@@ -358,6 +371,7 @@ function outlineFallbackMicroBeats(): MicroBeat[] {
     description: line,
     target_words: 0,
     focus: 'outline_ref',
+    beat_type: 'progress',
   }))
 }
 
@@ -439,7 +453,20 @@ const microEmptyDescription = computed(() => {
   return '暂无指挥器微观节拍：流式生成或全托管写作时将进行章前规划（outline_planning）'
 })
 
-const getBeatTypeColor = (focus: string): 'success' | 'warning' | 'error' | 'info' | 'default' => {
+const getBeatTypeColor = (
+  focus: string,
+  beatType?: string,
+): 'success' | 'warning' | 'error' | 'info' | 'default' => {
+  const typeColorMap: Record<string, 'success' | 'warning' | 'error' | 'info' | 'default'> = {
+    setup: 'info',
+    progress: 'success',
+    confrontation: 'warning',
+    reveal: 'error',
+    payoff: 'default',
+    hook: 'error',
+  }
+  const typeKey = (beatType || '').trim()
+  if (typeColorMap[typeKey]) return typeColorMap[typeKey]
   const colorMap: Record<string, 'success' | 'warning' | 'error' | 'info' | 'default'> = {
     sensory: 'info',
     dialogue: 'success',
