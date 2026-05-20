@@ -1,0 +1,35 @@
+name: 章节完成度返修
+category: generation
+source: application/workflows/beat_audit_rewrite.py
+description: 根据章节完成度审计结果进行有限返修，支持补尾、局部重写、压缩尾段与角色/对白/视角修正。
+builtin: true
+tags:
+- generation
+- review
+- patch
+- completion
+output_format: text
+variables:
+- name: outline
+  desc: 本章大纲
+  type: string
+  required: true
+- name: target_words
+  desc: 章节目标字数
+  type: integer
+  required: true
+- name: beats
+  desc: 规划节拍 JSON
+  type: string
+  required: false
+  default: ''
+- name: audit_report
+  desc: 章节完成度审计 JSON
+  type: string
+  required: true
+- name: content
+  desc: 当前完整章节正文
+  type: string
+  required: true
+id: chapter-completion-patch
+sort_order: 19

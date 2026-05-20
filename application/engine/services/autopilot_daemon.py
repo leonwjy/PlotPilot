@@ -29,6 +29,7 @@ from application.ai.llm_output_sanitize import strip_reasoning_artifacts
 from application.ai.prose_fragment_aggregator import aggregate_inline_prose_fragments
 from application.ai.llm_retry_policy import LLM_MAX_TOTAL_ATTEMPTS
 from application.workflows.beat_continuation import format_prior_draft_for_prompt
+from application.workflows.beat_audit_rewrite import BeatAuditRewriteService
 from domain.novel.value_objects.chapter_id import ChapterId
 from domain.novel.value_objects.word_count import WordCount
 from domain.novel.value_objects.generation_preferences import GenerationPreferences
@@ -91,6 +92,7 @@ class AutopilotDaemon:
         # 章节"节拍耗尽但字数不足"重写计数器，key=(novel_id, chapter_num)
         # 防止清除重写陷入新的无限循环
         self._beat_exhausted_rewrite_count: Dict[tuple, int] = {}
+        self.beat_audit_rewrite = BeatAuditRewriteService(llm_service)
 
         #: 本章写作阶段产生的 Beat 快照，供章后叙事同步写入 micro_beats（非章纲句读切分）
         self._pending_chapter_micro_beats: Dict[Tuple[str, int], List[Dict[str, Any]]] = {}
@@ -1633,7 +1635,7 @@ class AutopilotDaemon:
                     partition_mode=getattr(
                         novel.generation_prefs,
                         "outline_partition_mode",
-                        "single",
+                        "auto",
                     ),
                 )
             except Exception as e:
@@ -1845,7 +1847,7 @@ class AutopilotDaemon:
                 # 获取指挥信号（铺陈/收束/着陆）——须在共享状态写入前取得，供遥测字段使用
                 signal = conductor.get_signal(i)
                 single_partition_mode = (
-                    getattr(novel.generation_prefs, "outline_partition_mode", "single") == "single"
+                    getattr(novel.generation_prefs, "outline_partition_mode", "auto") == "single"
                 )
                 if single_partition_mode or not novel.generation_prefs.beat_hard_cap_enabled:
                     signal = replace(signal, hard_cap=0)
@@ -2013,6 +2015,54 @@ class AutopilotDaemon:
                         emotion_trend=mw_ctx.emotion_trend,  # ★ Phase 2: 传入情绪方向
                     )
 
+                    audit_result = await self.beat_audit_rewrite.audit_and_rewrite_beat(
+                        outline=outline,
+                        beat=beat,
+                        beat_index=i,
+                        total_beats=len(beats),
+                        prior_draft=accumulated_content,
+                        content=beat_content,
+                    )
+                    if audit_result.rewritten:
+                        old_beat_length = len(beat_content.strip())
+                        logger.info(
+                            "[%s] 🧽 节拍 %s/%s 审计后局部重写（attempts=%s, %s→%s 字）",
+                            novel.novel_id.value,
+                            i + 1,
+                            len(beats),
+                            audit_result.rewrite_attempts,
+                            old_beat_length,
+                            len(audit_result.content.strip()),
+                        )
+                        beat_content = audit_result.content
+                        preview_content = (
+                            f"{accumulated_content.rstrip()}\n\n{beat_content.strip()}"
+                            if accumulated_content.strip()
+                            else beat_content.strip()
+                        )
+                        self._publish_generation_event(
+                            novel.novel_id.value,
+                            "beat_rewritten",
+                            {
+                                "chapter_number": chapter_num,
+                                "beat_index": i,
+                                "old_length": old_beat_length,
+                                "new_length": len(beat_content.strip()),
+                                "rewrite_attempts": audit_result.rewrite_attempts,
+                                "content": preview_content,
+                            },
+                        )
+                    else:
+                        beat_content = audit_result.content
+                    for warning in audit_result.warnings:
+                        logger.warning(
+                            "[%s] 节拍 %s/%s 审计提示：%s",
+                            novel.novel_id.value,
+                            i + 1,
+                            len(beats),
+                            warning,
+                        )
+
                     # 报告实际字数给指挥
                     actual_words = len(beat_content.strip())
                     deviation = conductor.report_actual(actual_words)
@@ -2148,17 +2198,51 @@ class AutopilotDaemon:
             self._flush_novel(novel)
             return
 
-        if use_wf and chapter_content.strip():
-            try:
-                await self.chapter_workflow.post_process_generated_chapter(
-                    novel.novel_id.value, chapter_num, outline, chapter_content, scene_director=None
-                )
-                logger.info(f"[{novel.novel_id}]    ✅ post_process_generated_chapter 完成")
-            except Exception as e:
-                logger.warning(f"post_process_generated_chapter 失败（仍落库）：{e}")
-
         # 7. 章节完成检查（弹性边界策略 —— 收紧：减少「章纲未写完就放行」）
         actual_word_count = len(chapter_content.strip())
+        try:
+            chapter_completion = await self.beat_audit_rewrite.audit_and_patch_chapter(
+                outline=outline,
+                target_words=target_word_count,
+                beats=beats,
+                content=chapter_content,
+            )
+            if chapter_completion.patched and chapter_completion.content:
+                logger.info(
+                    "[%s] 🧩 章节完成度返修已应用：%s → %s 字",
+                    novel.novel_id.value,
+                    len(chapter_content.strip()),
+                    len(chapter_completion.content.strip()),
+                )
+                chapter_content = self._finalize_chapter_body_text(
+                    novel, chapter_completion.content
+                )
+                actual_word_count = len(chapter_content.strip())
+                await self._upsert_chapter_content(
+                    novel, next_chapter_node, chapter_content, status="draft"
+                )
+                self._publish_generation_event(
+                    novel.novel_id.value,
+                    "chapter_completion_patched",
+                    {
+                        "chapter_number": chapter_num,
+                        "new_length": len(chapter_content.strip()),
+                        "content": chapter_content,
+                    },
+                )
+            if chapter_completion.audit is not None:
+                logger.info(
+                    "[%s] 章节完成度审计：completed=%s severity=%s patch_mode=%s brief=%s",
+                    novel.novel_id.value,
+                    chapter_completion.audit.completed,
+                    chapter_completion.audit.severity,
+                    chapter_completion.audit.patch_mode,
+                    chapter_completion.audit.patch_brief[:160],
+                )
+            for warning in chapter_completion.warnings:
+                logger.warning("[%s] 章节完成度审计提示：%s", novel.novel_id.value, warning)
+        except Exception as e:
+            logger.warning("[%s] 章节完成度审计异常，继续原完成判定：%s", novel.novel_id.value, e)
 
         # 检测最后节拍是否是悬念收尾
         last_beat_is_suspense = beats and beats[-1].focus == "suspense" if beats else False
@@ -2335,6 +2419,7 @@ class AutopilotDaemon:
         novel.current_stage = NovelStage.AUDITING
         # 章节正常完成，清理对应的重写计数
         self._beat_exhausted_rewrite_count.pop((novel.novel_id.value, chapter_num), None)
+        content_before_final_adjustments = chapter_content
 
         # 🔗 衔接引擎：章节完成后自检衔接度（非第 1 章）
         # 如果衔接度 < 0.6，自动修整首段（最多 2 轮）
@@ -2365,6 +2450,52 @@ class AutopilotDaemon:
                 novel.novel_id.value, chapter_num, outline, chapter_content,
                 target_word_count, novel,
             )
+
+        if chapter_content.strip() != content_before_final_adjustments.strip():
+            actual_word_count = len(chapter_content.strip())
+            try:
+                final_completion = await self.beat_audit_rewrite.audit_and_patch_chapter(
+                    outline=outline,
+                    target_words=target_word_count,
+                    beats=beats,
+                    content=chapter_content,
+                )
+                if final_completion.patched and final_completion.content:
+                    logger.info(
+                        "[%s] 🧩 最终调整后二次返修已应用：%s → %s 字",
+                        novel.novel_id.value,
+                        len(chapter_content.strip()),
+                        len(final_completion.content.strip()),
+                    )
+                    chapter_content = self._finalize_chapter_body_text(
+                        novel, final_completion.content
+                    )
+                    actual_word_count = len(chapter_content.strip())
+                    await self._upsert_chapter_content(
+                        novel, next_chapter_node, chapter_content, status="draft"
+                    )
+                    self._publish_generation_event(
+                        novel.novel_id.value,
+                        "chapter_completion_patched",
+                        {
+                            "chapter_number": chapter_num,
+                            "new_length": len(chapter_content.strip()),
+                            "content": chapter_content,
+                        },
+                    )
+                for warning in final_completion.warnings:
+                    logger.warning("[%s] 最终完成度审计提示：%s", novel.novel_id.value, warning)
+            except Exception as e:
+                logger.warning("[%s] 最终完成度审计异常，继续落库：%s", novel.novel_id.value, e)
+
+        if use_wf and chapter_content.strip():
+            try:
+                await self.chapter_workflow.post_process_generated_chapter(
+                    novel.novel_id.value, chapter_num, outline, chapter_content, scene_director=None
+                )
+                logger.info(f"[{novel.novel_id}]    ✅ post_process_generated_chapter 完成")
+            except Exception as e:
+                logger.warning(f"post_process_generated_chapter 失败（仍落库）：{e}")
 
         # 🔥 先更新阶段到共享内存（不写章节聚合，避免占位 0 覆盖真实数据）
         self._update_shared_state(
@@ -2427,6 +2558,17 @@ class AutopilotDaemon:
                 }
             )
         return out
+
+    @staticmethod
+    def _finalize_chapter_body_text(novel: Novel, raw: str) -> str:
+        """推理块清洗 + 按书目偏好可选段内短句聚合。"""
+        stripped = strip_reasoning_artifacts(raw or "").strip()
+        try:
+            if getattr(novel.generation_prefs, "inline_prose_aggregation_enabled", False):
+                return aggregate_inline_prose_fragments(stripped)
+        except Exception:
+            pass
+        return stripped
 
     @staticmethod
     def _beat_sheet_to_plan_json(beat_sheet: Optional[Any]) -> Optional[Dict[str, Any]]:
@@ -2554,6 +2696,14 @@ class AutopilotDaemon:
             streaming_bus.publish_audit_event(novel_id, event_type, data)
         except Exception as e:
             logger.debug(f"[{novel_id}] 发布审计事件失败: {e}")
+
+    def _publish_generation_event(self, novel_id: str, event_type: str, data: Optional[Dict] = None) -> None:
+        """发布写作期返修事件到流式总线。"""
+        try:
+            from application.engine.services.streaming_bus import streaming_bus
+            streaming_bus.publish_generation_event(novel_id, event_type, data)
+        except Exception as e:
+            logger.debug(f"[{novel_id}] 发布写作返修事件失败: {e}")
 
     def _update_shared_state(self, novel_id: str, **fields) -> None:
         """将实时状态写入共享内存（供 API 与其他进程读取，不经由 SQLite）。

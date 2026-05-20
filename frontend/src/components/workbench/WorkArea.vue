@@ -1820,6 +1820,21 @@ const handleStartGenerate = async () => {
             streamStats.value = stats
           }
         },
+        onEvent: (ev) => {
+          if (ev.type === 'beat_rewritten') {
+            pushGenerateSseLog(
+              '审计',
+              `beat_rewritten #${ev.beat_index + 1} ${ev.old_length}→${ev.new_length}`,
+            )
+          } else if (ev.type === 'chapter_completion_patched') {
+            pushGenerateSseLog(
+              '审计',
+              `chapter_completion_patched ${ev.old_length}→${ev.new_length}`,
+            )
+          } else if (ev.type === 'chapter_completion_audit') {
+            pushGenerateSseLog('审计', 'chapter_completion_audit')
+          }
+        },
         onDone: (result) => {
           pushGenerateSseLog('SSE', 'done · 生成完成')
           lastWorkflowResult.value = result

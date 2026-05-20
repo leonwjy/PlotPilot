@@ -253,6 +253,9 @@ export type GenerateChapterStreamEvent =
   | { type: 'llm_chunk'; stage: string; text: string }
   | { type: 'beats_generated'; beats: StreamGeneratedBeat[] }
   | { type: 'chunk'; text: string; stats: ChunkStats }
+  | { type: 'beat_rewritten'; beat_index: number; old_length: number; new_length: number; rewrite_attempts: number }
+  | { type: 'chapter_completion_patched'; old_length: number; new_length: number }
+  | { type: 'chapter_completion_audit'; audit: Record<string, unknown> | null }
   | { type: 'done'; content: string; consistency_report: ConsistencyReportDTO; token_count: number; output_tokens: number; total_tokens: number; chars: number; style_warnings?: StyleWarning[]; ghost_annotations?: unknown[] }
   | { type: 'error'; message: string }
 
@@ -336,6 +339,25 @@ export async function consumeGenerateChapterStream(
             const ev: GenerateChapterStreamEvent = { type: 'chunk', text, stats: stats || { chars: 0, chunks: 0, estimated_tokens: 0 } }
             handlers.onEvent?.(ev)
             handlers.onChunk?.(text, stats)
+          } else if (typ === 'beat_rewritten') {
+            handlers.onEvent?.({
+              type: 'beat_rewritten',
+              beat_index: Number(o.beat_index ?? 0),
+              old_length: Number(o.old_length ?? 0),
+              new_length: Number(o.new_length ?? 0),
+              rewrite_attempts: Number(o.rewrite_attempts ?? 0),
+            })
+          } else if (typ === 'chapter_completion_patched') {
+            handlers.onEvent?.({
+              type: 'chapter_completion_patched',
+              old_length: Number(o.old_length ?? 0),
+              new_length: Number(o.new_length ?? 0),
+            })
+          } else if (typ === 'chapter_completion_audit') {
+            handlers.onEvent?.({
+              type: 'chapter_completion_audit',
+              audit: (o.audit && typeof o.audit === 'object' ? o.audit : null) as Record<string, unknown> | null,
+            })
           } else if (typ === 'done') {
             const rawReport = o.consistency_report
             const consistency_report: ConsistencyReportDTO =

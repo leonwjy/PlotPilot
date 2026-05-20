@@ -215,6 +215,31 @@ class StreamingBus:
         except Exception as e:
             logger.error("[StreamingBus] 发布停止信号失败: %s", e)
 
+    def publish_generation_event(self, novel_id: str, event_type: str, data: Optional[Dict] = None):
+        """发布写作期流程事件（如节拍返修、章末补完）。"""
+        queue = get_stream_queue()
+        if queue is None:
+            return
+
+        message = {
+            "novel_id": novel_id,
+            "type": "generation_event",
+            "event_type": event_type,
+            "data": data or {},
+            "timestamp": time.time(),
+        }
+
+        try:
+            queue.put_nowait(message)
+        except Full:
+            logger.warning(
+                "[StreamingBus] 队列满，丢弃写作流程事件 novel=%s event=%s",
+                novel_id,
+                event_type,
+            )
+        except Exception as e:
+            logger.error("[StreamingBus] 发布写作流程事件失败: %s", e)
+
     def publish_start_signal(self, novel_id: str):
         """发布启动信号消息（主进程 /start API 调用）
 
@@ -391,7 +416,12 @@ class StreamingBus:
 
         return chunks
 
-    def get_chunks_and_events_batch(self, novel_id: str, max_chunks: int = None) -> Dict[str, Any]:
+    def get_chunks_and_events_batch(
+        self,
+        novel_id: str,
+        max_chunks: int = None,
+        include_audit_events: bool = True,
+    ) -> Dict[str, Any]:
         """批量获取指定小说的 chunks 和审计事件（SSE 接口调用）
 
         Args:
@@ -407,11 +437,12 @@ class StreamingBus:
         max_chunks = max_chunks or self.MAX_BATCH_CHUNKS
         chunks: List[str] = []
         audit_events: List[Dict] = []
+        generation_events: List[Dict] = []
         other_messages: List[Dict] = []
 
         queue = get_stream_queue()
         if queue is None:
-            return {"chunks": chunks, "audit_events": audit_events}
+            return {"chunks": chunks, "audit_events": audit_events, "generation_events": generation_events}
 
         # 读取队列中的消息
         for _ in range(max_chunks):
@@ -444,8 +475,19 @@ class StreamingBus:
 
                     # 审计事件
                     if msg_type == "audit_event":
-                        if msg_novel_id == novel_id:
+                        if msg_novel_id == novel_id and include_audit_events:
                             audit_events.append({
+                                "event_type": message.get("event_type"),
+                                "data": message.get("data", {}),
+                                "timestamp": message.get("timestamp"),
+                            })
+                        else:
+                            other_messages.append(message)
+                        continue
+
+                    if msg_type == "generation_event":
+                        if msg_novel_id == novel_id:
+                            generation_events.append({
                                 "event_type": message.get("event_type"),
                                 "data": message.get("data", {}),
                                 "timestamp": message.get("timestamp"),
@@ -476,7 +518,11 @@ class StreamingBus:
                     # 队列满时丢弃
                     pass
 
-        return {"chunks": chunks, "audit_events": audit_events}
+        return {
+            "chunks": chunks,
+            "audit_events": audit_events,
+            "generation_events": generation_events,
+        }
 
     def get_chunk(self, novel_id: str, timeout: float = 0.05) -> Optional[str]:
         """获取单个 chunk（兼容旧接口）"""

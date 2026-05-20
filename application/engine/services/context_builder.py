@@ -303,7 +303,7 @@ class ContextBuilder:
     # 节拍数量上限：拍数过多时每拍字数太少，模型倾向用八股堆满
     MAX_BEATS = 8
     # 每拍最低字数：低于此值将合并相邻拍（略抬高以减少「碎拍」内心戏凑数）
-    MIN_BEAT_WORDS = 800
+    MIN_BEAT_WORDS = 300
 
     def magnify_outline_to_beats(
         self,

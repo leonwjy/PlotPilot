@@ -58,8 +58,8 @@ class PlanningOutlinePartitionNode(AbstractPlanningNode):
                 name="partition_mode",
                 data_type=PortDataType.TEXT,
                 required=False,
-                default="single",
-                description="章纲划分模式：single=整章单节拍；auto=旧多节拍自动拆分；beat_sheet=优先 BeatSheet",
+                default="auto",
+                description="章纲划分模式：auto=按字数/章纲动态拆分；single=整章单节拍；beat_sheet=优先 BeatSheet",
             ),
         ],
         output_ports=[
@@ -117,7 +117,7 @@ class PlanningOutlinePartitionNode(AbstractPlanningNode):
 
         use_llm = inputs.get("use_llm")
         use_llm_bool = True if use_llm is None else bool(use_llm)
-        partition_mode = str(inputs.get("partition_mode") or "single").strip()
+        partition_mode = str(inputs.get("partition_mode") or "auto").strip()
 
         novel_id = context.get("novel_id") if isinstance(context, dict) else None
         chapter_number = context.get("chapter_number") if isinstance(context, dict) else None

@@ -78,8 +78,8 @@ def render_cpms_outline_partition_prompts(
 
 
 def _normalize_partition_mode(mode: Optional[str]) -> str:
-    raw = str(mode or OUTLINE_PARTITION_MODE_SINGLE).strip()
-    return raw if raw in OUTLINE_PARTITION_MODES else OUTLINE_PARTITION_MODE_SINGLE
+    raw = str(mode or OUTLINE_PARTITION_MODE_AUTO).strip()
+    return raw if raw in OUTLINE_PARTITION_MODES else OUTLINE_PARTITION_MODE_AUTO
 
 
 def render_cpms_single_beat_plan_prompts(
@@ -278,6 +278,9 @@ def _normalize_llm_atom_entries(entries: List[Dict[str, Any]]) -> List[PlanAtomS
         hint = row.get("source_hint") or row.get("anchor")
         hint_s = str(hint).strip() if hint else None
         ext = dict(row.get("extensions") or {}) if isinstance(row.get("extensions"), dict) else {}
+        for key in ("focus", "type", "scene_type", "completion_check", "must_include", "avoid"):
+            if key in row and key not in ext:
+                ext[key] = row[key]
         ext.setdefault("decomposition_mode", "llm_outline_decompose")
         out.append(
             PlanAtomSpec(
@@ -435,7 +438,7 @@ async def build_chapter_execution_plan_async(
     decomposition_label: str = "planning_outline_partition",
     emit_llm_delta: OutlinePartitionEmitDelta = None,
     llm_service: Any = None,
-    partition_mode: str = OUTLINE_PARTITION_MODE_SINGLE,
+    partition_mode: str = OUTLINE_PARTITION_MODE_AUTO,
 ) -> ChapterExecutionPlan:
     """构建章前执行计划。LLM 默认经 CPMS outline-beat-partition；可传 llm_system / llm_user 覆写。"""
     raw = (outline or "").strip()

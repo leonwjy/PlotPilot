@@ -5,16 +5,16 @@ from domain.novel.value_objects.generation_preferences import GenerationPreferen
 def test_missing_inline_prose_aggregation_defaults_false():
     gp = GenerationPreferences.from_dict({"phase_display_mode": True})
     assert gp.inline_prose_aggregation_enabled is False
-    assert gp.outline_partition_mode == "single"
+    assert gp.outline_partition_mode == "auto"
 
 
-def test_outline_partition_mode_validation_defaults_single():
+def test_outline_partition_mode_validation_defaults_auto():
     assert GenerationPreferences.from_dict({"outline_partition_mode": "auto"}).outline_partition_mode == "auto"
     assert (
         GenerationPreferences.from_dict({"outline_partition_mode": "beat_sheet"}).outline_partition_mode
         == "beat_sheet"
     )
-    assert GenerationPreferences.from_dict({"outline_partition_mode": "bad"}).outline_partition_mode == "single"
+    assert GenerationPreferences.from_dict({"outline_partition_mode": "bad"}).outline_partition_mode == "auto"
 
 
 def test_explicit_inline_prose_aggregation_true():

@@ -307,8 +307,8 @@ class BeatNode(BaseNode):
                 name="partition_mode",
                 data_type=PortDataType.TEXT,
                 required=False,
-                default="single",
-                description="章纲划分模式：single=整章单节拍；auto=旧多节拍自动拆分；beat_sheet=优先 BeatSheet",
+                default="auto",
+                description="章纲划分模式：auto=按字数/章纲动态拆分；single=整章单节拍；beat_sheet=优先 BeatSheet",
             ),
         ],
         output_ports=[
@@ -344,7 +344,7 @@ class BeatNode(BaseNode):
             except (TypeError, ValueError):
                 tw = 2500
             nid = context.get("novel_id") if isinstance(context, dict) else None
-            partition_mode = str(inputs.get("partition_mode") or context.get("partition_mode") or "single").strip()
+            partition_mode = str(inputs.get("partition_mode") or context.get("partition_mode") or "auto").strip()
 
             sheet = inputs.get("beat_sheet_json")
             beat_sheet_json: Optional[Dict[str, Any]] = None

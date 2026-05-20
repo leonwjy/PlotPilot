@@ -1,0 +1,22 @@
+name: 正文完整性审计
+category: review
+source: application/workflows/beat_audit_rewrite.py
+description: 检查缺字漏字、断句、重复、残留标签、角色名错写和明显正文污染。
+builtin: true
+tags:
+- review
+- integrity
+- 缺字漏字
+output_format: json
+variables:
+- name: content
+  desc: 待检查正文
+  type: string
+  required: true
+- name: scope
+  desc: 检查范围说明
+  type: string
+  required: false
+  default: chapter
+id: prose-integrity-audit
+sort_order: 18

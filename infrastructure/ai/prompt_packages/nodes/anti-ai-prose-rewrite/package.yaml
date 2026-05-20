@@ -1,0 +1,52 @@
+name: Anti-AI 节拍局部重写
+category: anti-ai
+source: application/workflows/beat_audit_rewrite.py
+description: 根据节拍审计结果，只重写当前节拍正文，保留剧情事实并去除 AI 味、空泛八股与战斗空转。
+builtin: true
+tags:
+- Anti-AI
+- rewrite
+- 节拍
+- 闭环
+output_format: text
+variables:
+- name: outline
+  desc: 本章大纲
+  type: string
+  required: true
+- name: beat_description
+  desc: 当前节拍任务
+  type: string
+  required: true
+- name: beat_focus
+  desc: 当前节拍焦点
+  type: string
+  required: false
+  default: ''
+- name: beat_index
+  desc: 当前节拍序号
+  type: integer
+  required: true
+- name: total_beats
+  desc: 总节拍数
+  type: integer
+  required: true
+- name: target_words
+  desc: 当前节拍目标字数
+  type: integer
+  required: true
+- name: prior_draft
+  desc: 本节拍之前已完成正文
+  type: string
+  required: false
+  default: ''
+- name: audit_report
+  desc: 节拍审计 JSON 或摘要
+  type: string
+  required: true
+- name: content
+  desc: 当前节拍原正文
+  type: string
+  required: true
+id: anti-ai-prose-rewrite
+sort_order: 37

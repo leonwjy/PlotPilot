@@ -1,0 +1,30 @@
+name: 章节完成度审计
+category: review
+source: application/workflows/beat_audit_rewrite.py
+description: 章末检查大纲、节拍、字数与收束是否完成，决定通过、补尾、压缩或局部重写。
+builtin: true
+tags:
+- review
+- completion
+- 章末审计
+output_format: json
+variables:
+- name: outline
+  desc: 本章大纲
+  type: string
+  required: true
+- name: target_words
+  desc: 章节目标字数
+  type: integer
+  required: true
+- name: beats
+  desc: 已规划节拍列表
+  type: string
+  required: false
+  default: ''
+- name: content
+  desc: 完整章节正文
+  type: string
+  required: true
+id: chapter-completion-audit
+sort_order: 17

@@ -235,6 +235,10 @@ export interface ChapterStreamEvent {
     beat_index?: number
     content?: string
     word_count?: number
+    event_type?: string
+    rewrite_attempts?: number
+    old_length?: number
+    new_length?: number
     beats?: Array<Record<string, unknown>>
     outline_plan_mode?: string
     total_beats?: number

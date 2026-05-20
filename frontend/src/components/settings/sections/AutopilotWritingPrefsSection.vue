@@ -35,7 +35,7 @@
               <div class="row-label">
                 <span class="row-title">章纲划分模式</span>
                 <n-text depth="3" class="row-hint">
-                  默认单节拍：章纲先收束为一个整章执行任务，再一次性扩写完整章节；多节拍保留为实验模式。
+                  默认自动多节拍：根据目标字数和章纲密度动态拆分，并在每个节拍完成后审计修订。
                 </n-text>
               </div>
               <n-select
@@ -252,10 +252,10 @@ const savingConductor = ref(false)
 
 const smartTruncate = ref(false)
 const beatHardCap = ref(true)
-const outlinePartitionMode = ref<NonNullable<GenerationPrefsDTO['outline_partition_mode']>>('single')
+const outlinePartitionMode = ref<NonNullable<GenerationPrefsDTO['outline_partition_mode']>>('auto')
 const outlinePartitionModeOptions = [
-  { label: '单节拍整章扩写', value: 'single' },
   { label: '自动多节拍', value: 'auto' },
+  { label: '单节拍整章扩写', value: 'single' },
   { label: '优先 BeatSheet', value: 'beat_sheet' },
 ] as const
 
@@ -279,7 +279,9 @@ function applyPrefs(p?: GenerationPrefsDTO | null) {
   outlinePartitionMode.value =
     p2.outline_partition_mode === 'auto' || p2.outline_partition_mode === 'beat_sheet'
       ? p2.outline_partition_mode
-      : 'single'
+      : p2.outline_partition_mode === 'single'
+        ? 'single'
+        : 'auto'
 
   pauseAfterEachAudit.value = Boolean(p2.pause_after_each_chapter_audit)
   auditPauseOnHardFail.value = Boolean(p2.audit_pause_on_hard_fail)

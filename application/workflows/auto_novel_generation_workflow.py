@@ -27,6 +27,7 @@ from domain.ai.value_objects.prompt import Prompt
 from application.ai.llm_output_sanitize import strip_reasoning_artifacts
 from application.ai.prose_fragment_aggregator import aggregate_inline_prose_fragments
 from application.workflows.beat_continuation import format_prior_draft_for_prompt
+from application.workflows.beat_audit_rewrite import BeatAuditRewriteService
 from application.workflows.prose_discipline import build_prose_discipline_block
 from application.engine.services.beat_coherence_enhancer import BeatCoherenceEnhancer, BeatContext
 from application.engine.services.spatial_coherence import (
@@ -327,6 +328,7 @@ class AutoNovelGenerationWorkflow:
 
         # 初始化节拍连贯性增强器
         self.coherence_enhancer = BeatCoherenceEnhancer()
+        self.beat_audit_rewrite = BeatAuditRewriteService(llm_service)
 
         # ★ Theme 集成器（延迟初始化）
         self._theme_integrator = None
@@ -643,7 +645,7 @@ class AutoNovelGenerationWorkflow:
                 target_words,
                 beat_sheet=None,
                 scene_director=scene_director,
-                partition_mode="single",
+                partition_mode="auto",
             )
             logger.info(f"  ✓ 已拆分为 {len(beats)} 个微观节拍（整章目标 {target_words} 字）")
         
@@ -763,6 +765,25 @@ class AutoNovelGenerationWorkflow:
 
                 logger.info(f"生成节拍 {i+1}/{len(beats)}: {beat.focus} - {beat.description[:50]}...")
 
+                audit_result = await self.beat_audit_rewrite.audit_and_rewrite_beat(
+                    outline=outline,
+                    beat=beat,
+                    beat_index=i,
+                    total_beats=len(beats),
+                    prior_draft=prior_draft,
+                    content=beat_content,
+                )
+                if audit_result.rewritten:
+                    logger.info(
+                        "节拍 %s/%s 已经审计后局部重写（attempts=%s）",
+                        i + 1,
+                        len(beats),
+                        audit_result.rewrite_attempts,
+                    )
+                for warning in audit_result.warnings:
+                    logger.warning("节拍 %s/%s 审计提示：%s", i + 1, len(beats), warning)
+                beat_content = audit_result.content
+
                 if beat_content:
                     previous_context = self.coherence_enhancer.analyze_beat_context(
                         beat_content, beat.focus
@@ -800,6 +821,29 @@ class AutoNovelGenerationWorkflow:
             llm_result = await self.llm_service.generate(prompt, config)
             content = self._finalize_chapter_body_text(novel_id, llm_result.content or "")
             logger.info(f"  ✓ LLM 响应已接收: {len(content)} 字符")
+
+        chapter_completion = await self.beat_audit_rewrite.audit_and_patch_chapter(
+            outline=outline,
+            target_words=target_words,
+            beats=beats,
+            content=content,
+        )
+        if chapter_completion.patched and chapter_completion.content:
+            logger.info(
+                "章节完成度返修已应用：%s → %s 字",
+                len(content),
+                len(chapter_completion.content),
+            )
+            content = self._finalize_chapter_body_text(novel_id, chapter_completion.content)
+        if chapter_completion.audit is not None:
+            logger.info(
+                "章节完成度审计：completed=%s severity=%s patch_mode=%s",
+                chapter_completion.audit.completed,
+                chapter_completion.audit.severity,
+                chapter_completion.audit.patch_mode,
+            )
+        for warning in chapter_completion.warnings:
+            logger.warning("章节完成度审计提示：%s", warning)
         
         # 保存微观节拍用于后续处理
         if beats:
@@ -850,7 +894,7 @@ class AutoNovelGenerationWorkflow:
         beat_sheet: Optional[Any] = None,
         scene_director: Optional[SceneDirectorAnalysis] = None,
         emit_llm_delta: Optional[Callable[[str], Awaitable[None]]] = None,
-        partition_mode: str = "single",
+        partition_mode: str = "auto",
     ) -> List[Any]:
         """章纲拆节拍：经 ``build_chapter_execution_plan_async``（与 DAG planning_outline_partition 同源）再投影为 Beat。"""
         from application.engine.dag.plan.outline_beat_planner import (
@@ -965,7 +1009,7 @@ class AutoNovelGenerationWorkflow:
                         beat_sheet=None,
                         scene_director=scene_director,
                         emit_llm_delta=emit_outline_partition,
-                        partition_mode="single",
+                        partition_mode="auto",
                     )
                 )
 
@@ -1122,6 +1166,29 @@ class AutoNovelGenerationWorkflow:
                         f"生成节拍 {i+1}/{len(beats)}: {beat.focus} - {beat.description[:50]}..."
                     )
 
+                    audit_result = await self.beat_audit_rewrite.audit_and_rewrite_beat(
+                        outline=outline,
+                        beat=beat,
+                        beat_index=i,
+                        total_beats=len(beats),
+                        prior_draft=prior_draft,
+                        content=beat_content,
+                    )
+                    if audit_result.rewritten:
+                        old_len = len(beat_content)
+                        beat_content = audit_result.content
+                        yield {
+                            "type": "beat_rewritten",
+                            "beat_index": i,
+                            "old_length": old_len,
+                            "new_length": len(beat_content),
+                            "rewrite_attempts": audit_result.rewrite_attempts,
+                        }
+                    else:
+                        beat_content = audit_result.content
+                    for warning in audit_result.warnings:
+                        logger.warning("节拍 %s/%s 审计提示：%s", i + 1, len(beats), warning)
+
                     if beat_content:
                         previous_context = self.coherence_enhancer.analyze_beat_context(
                             beat_content, beat.focus
@@ -1176,6 +1243,38 @@ class AutoNovelGenerationWorkflow:
                     }
 
                 content = self._finalize_chapter_body_text(novel_id, "".join(parts))
+            chapter_completion = await self.beat_audit_rewrite.audit_and_patch_chapter(
+                outline=outline,
+                target_words=target_words,
+                beats=beats,
+                content=content,
+            )
+            if chapter_completion.patched and chapter_completion.content:
+                old_content = content
+                content = self._finalize_chapter_body_text(novel_id, chapter_completion.content)
+                yield {
+                    "type": "chapter_completion_patched",
+                    "old_length": len(old_content),
+                    "new_length": len(content),
+                }
+            completion_payload = (
+                chapter_completion.audit.model_dump(mode="json")
+                if chapter_completion.audit is not None
+                else None
+            )
+            if chapter_completion.audit is not None:
+                logger.info(
+                    "章节完成度审计：completed=%s severity=%s patch_mode=%s",
+                    chapter_completion.audit.completed,
+                    chapter_completion.audit.severity,
+                    chapter_completion.audit.patch_mode,
+                )
+                yield {
+                    "type": "chapter_completion_audit",
+                    "audit": completion_payload,
+                }
+            for warning in chapter_completion.warnings:
+                logger.warning("章节完成度审计提示：%s", warning)
             logger.info(f"  ✓ LLM 流式响应完成: {chunk_count} 个块, {len(content)} 字符")
 
             if not content.strip():
@@ -1213,6 +1312,7 @@ class AutoNovelGenerationWorkflow:
                 "chars": len(content),
                 "beats": _beats_for_sse(beats),
                 "ghost_annotations": [ann.to_dict() for ann in ghost_annotations],
+                "chapter_completion_audit": completion_payload,
                 "style_warnings": [
                     {
                         "pattern": hit.pattern,

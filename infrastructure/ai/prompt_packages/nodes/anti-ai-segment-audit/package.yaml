@@ -1,0 +1,48 @@
+name: Anti-AI 节拍审计
+category: anti-ai
+source: application/workflows/beat_audit_rewrite.py
+description: 节拍完成后审计正文是否有 AI 味、空泛八股、战斗空转、字数失控与节拍未完成问题。
+builtin: true
+tags:
+- Anti-AI
+- 审计
+- 节拍
+- 闭环
+output_format: json
+variables:
+- name: outline
+  desc: 本章大纲
+  type: string
+  required: true
+- name: beat_description
+  desc: 当前节拍任务
+  type: string
+  required: true
+- name: beat_focus
+  desc: 当前节拍焦点
+  type: string
+  required: false
+  default: ''
+- name: beat_index
+  desc: 当前节拍序号
+  type: integer
+  required: true
+- name: total_beats
+  desc: 总节拍数
+  type: integer
+  required: true
+- name: target_words
+  desc: 当前节拍目标字数
+  type: integer
+  required: true
+- name: prior_draft
+  desc: 本节拍之前已完成正文
+  type: string
+  required: false
+  default: ''
+- name: content
+  desc: 当前节拍正文
+  type: string
+  required: true
+id: anti-ai-segment-audit
+sort_order: 36

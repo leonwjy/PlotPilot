@@ -40,6 +40,9 @@ CHAPTER_BRIDGE_CHECK = "chapter-bridge-check"
 CHAPTER_BRIDGE_FIX = "chapter-bridge-fix"
 CHAPTER_SINGLE_BEAT_INSTRUCTIONS = "chapter-single-beat-instructions"
 CHAPTER_PROSE_DISCIPLINE = "chapter-prose-discipline"
+CHAPTER_COMPLETION_AUDIT = "chapter-completion-audit"
+CHAPTER_COMPLETION_PATCH = "chapter-completion-patch"
+PROSE_INTEGRITY_AUDIT = "prose-integrity-audit"
 
 # ── Scene ────────────────────────────────────────────────────────────────
 SCENE_GENERATION = "scene-generation"
@@ -92,6 +95,8 @@ KNOWLEDGE_INITIAL = "knowledge-initial"
 ANTI_AI_BEHAVIOR_PROTOCOL = "anti-ai-behavior-protocol"
 ANTI_AI_ALLOWLIST_EXPLAIN = "anti-ai-allowlist-explain"
 ANTI_AI_CHAPTER_AUDIT = "anti-ai-chapter-audit"
+ANTI_AI_SEGMENT_AUDIT = "anti-ai-segment-audit"
+ANTI_AI_PROSE_REWRITE = "anti-ai-prose-rewrite"
 ANTI_AI_CHARACTER_STATE_LOCK = "anti-ai-character-state-lock"
 ANTI_AI_FINALE_ENHANCEMENT = "anti-ai-finale-enhancement"
 ANTI_AI_MID_GENERATION_REFRESH = "anti-ai-mid-generation-refresh"
@@ -126,6 +131,7 @@ ALL_KEYS: frozenset[str] = frozenset({
     CHAPTER_NARRATIVE_SYNC, CHAPTER_STATE_EXTRACTION, CHAPTER_SUMMARIZER,
     CHAPTER_BRIDGE_EXTRACT, CHAPTER_BRIDGE_CHECK, CHAPTER_BRIDGE_FIX,
     CHAPTER_SINGLE_BEAT_INSTRUCTIONS, CHAPTER_PROSE_DISCIPLINE,
+    CHAPTER_COMPLETION_AUDIT, CHAPTER_COMPLETION_PATCH, PROSE_INTEGRITY_AUDIT,
     # Scene
     SCENE_GENERATION, SCENE_DIRECTOR, BEAT_SHEET_DECOMPOSITION,
     # Dialogue
@@ -152,7 +158,8 @@ ALL_KEYS: frozenset[str] = frozenset({
     KNOWLEDGE_INITIAL,
     # Anti-AI
     ANTI_AI_BEHAVIOR_PROTOCOL, ANTI_AI_ALLOWLIST_EXPLAIN,
-    ANTI_AI_CHAPTER_AUDIT, ANTI_AI_CHARACTER_STATE_LOCK,
+    ANTI_AI_CHAPTER_AUDIT, ANTI_AI_SEGMENT_AUDIT, ANTI_AI_PROSE_REWRITE,
+    ANTI_AI_CHARACTER_STATE_LOCK,
     ANTI_AI_FINALE_ENHANCEMENT, ANTI_AI_MID_GENERATION_REFRESH,
     # Autopilot / Workflow
     WORKFLOW_CHAPTER_GENERATION, AUTOPILOT_STREAM_BEAT,

@@ -21,8 +21,8 @@ OUTLINE_PARTITION_MODES = frozenset(
 class GenerationPreferences:
     """全托管与节拍指挥相关偏好。"""
 
-    # 章纲划分模式：single=整章单节拍；auto=旧多节拍自动拆分；beat_sheet=优先 BeatSheet，否则单节拍
-    outline_partition_mode: str = OUTLINE_PARTITION_MODE_SINGLE
+    # 章纲划分模式：auto=按字数/章纲动态拆分；single=整章单节拍；beat_sheet=优先 BeatSheet，否则单节拍
+    outline_partition_mode: str = OUTLINE_PARTITION_MODE_AUTO
     # 工作台/全托管 UI：True 时叙事单元展示为「第 N 阶段」，否则为「章」（默认阶段）
     phase_display_mode: bool = True
     # 超出节拍硬上限时是否做 smart_truncate（关则按字符硬截断；关硬帽时本项无意义）
@@ -54,9 +54,9 @@ class GenerationPreferences:
         # 全空对象：视为采用当前类默认（含阶段模式 + 默认关闭智能截断）
         if len(raw) == 0:
             return cls()
-        mode = str(raw.get("outline_partition_mode") or OUTLINE_PARTITION_MODE_SINGLE).strip()
+        mode = str(raw.get("outline_partition_mode") or OUTLINE_PARTITION_MODE_AUTO).strip()
         if mode not in OUTLINE_PARTITION_MODES:
-            mode = OUTLINE_PARTITION_MODE_SINGLE
+            mode = OUTLINE_PARTITION_MODE_AUTO
         # 兼容旧库：键缺失时默认「阶段」；显式 false 仍为章
         if "phase_display_mode" not in raw:
             phase_display_mode = True

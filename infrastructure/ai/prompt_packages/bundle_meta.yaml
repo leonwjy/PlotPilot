@@ -1,6 +1,6 @@
-version: 5.2.6-single-beat-cpms
+version: 5.3.1-completion-patch-loop
 name: PlotPilot 内置
 description: CPMS v5 统一提示词库 — 单节拍整章扩写、行文戒律节点化、统一注册表、消除硬编码
 author: PlotPilot Team
 engine: jinja2
-changelog: 'v5.2.6: 调整单节拍整章字数窗口、大纲密度提示与压缩完成模式，确保在目标字数附近完成整章大纲；v5.2.5: 单节拍整章写作补充目标字数区间与超限收束规则；v5.2.4: 行文戒律节点补充情节密度标题；v5.2: 新增 outline-single-beat-plan、chapter-single-beat-instructions、chapter-prose-discipline；v5.1: 新增 outline-beat-partition；v5: CPMS统一架构'
+changelog: 'v5.3.1: 新增章节完成度返修节点，补齐 append_closure/rewrite_segment/compress_tail 闭环，并将角色、对白、视角检查纳入节拍与章末审计；v5.3.0: 新增节拍完成审计、局部重写、章节完成度审计与正文完整性审计节点，支持多节拍生成-审计-重写闭环；v5.2.6: 调整单节拍整章字数窗口、大纲密度提示与压缩完成模式，确保在目标字数附近完成整章大纲；v5.2.5: 单节拍整章写作补充目标字数区间与超限收束规则；v5.2.4: 行文戒律节点补充情节密度标题；v5.2: 新增 outline-single-beat-plan、chapter-single-beat-instructions、chapter-prose-discipline；v5.1: 新增 outline-beat-partition；v5: CPMS统一架构'

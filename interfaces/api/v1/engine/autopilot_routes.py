@@ -840,11 +840,24 @@ def _chapter_stream_chunks_sync(novel_id: str, max_chunks: int) -> List[str]:
     return streaming_bus.get_chunks_batch(novel_id, max_chunks=max_chunks)
 
 
+def _chapter_stream_data_sync(novel_id: str, max_chunks: int) -> Dict[str, Any]:
+    from application.engine.services.streaming_bus import streaming_bus
+
+    return streaming_bus.get_chunks_and_events_batch(
+        novel_id,
+        max_chunks=max_chunks,
+        include_audit_events=False,
+    )
+
+
 def _chapter_stream_tick_sync(novel_repo, chapter_repo, novel_id: str, max_chunks: int):
     """单次轮询：DB 读取 + chunks 获取合并在同一线程池任务中，减少 asyncio.to_thread 调用次数。"""
     novel, chapters = _chapter_stream_poll_sync(novel_repo, chapter_repo, novel_id)
-    chunks = _chapter_stream_chunks_sync(novel_id, max_chunks) if novel else []
-    return novel, chapters, chunks
+    stream_data = _chapter_stream_data_sync(novel_id, max_chunks) if novel else {
+        "chunks": [],
+        "generation_events": [],
+    }
+    return novel, chapters, stream_data
 
 
 def _autopilot_events_tick_sync(novel_repo, chapter_repo, novel_id: str) -> Tuple[Optional[Dict[str, Any]], bool]:
@@ -2034,16 +2047,19 @@ async def autopilot_chapter_stream(novel_id: str):
                     break
                 # 🔥 加超时保护：DB 被锁时 2 秒超时，避免线程池被阻塞线程耗尽
                 try:
-                    novel, chapters, chunks = await asyncio.wait_for(
+                    novel, chapters, stream_data = await asyncio.wait_for(
                         loop.run_in_executor(
                             _SSE_THREAD_POOL, _chapter_stream_tick_sync, novel_repo, chapter_repo, novel_id, 50
                         ),
                         timeout=2.0,
                     )
+                    chunks = stream_data.get("chunks", [])
+                    generation_events = stream_data.get("generation_events", [])
                 except asyncio.TimeoutError:
                     # DB 被锁时只读 chunks（不碰 DB），前端不会卡死
                     logger.debug("SSE chapter stream tick 超时 novel=%s，跳过 DB", novel_id)
                     chunks = _chapter_stream_chunks_sync(novel_id, 50)
+                    generation_events = []
                     novel = None
                     # 从共享内存判断是否仍在运行
                     shared = _get_shared_state_for_novel_cached(novel_id)
@@ -2084,6 +2100,28 @@ async def autopilot_chapter_stream(novel_id: str):
                     # 共享内存也无数据，小说可能真的不存在，断开
                     logger.info("SSE chapter stream novel not found, closing: novel=%s", novel_id)
                     break
+
+                if generation_events:
+                    for generation_event in generation_events:
+                        data = generation_event.get("data") or {}
+                        event_type = str(generation_event.get("event_type") or "")
+                        if event_type in {"beat_rewritten", "chapter_completion_patched"}:
+                            event = {
+                                "type": "chapter_content",
+                                "message": "正文已根据审计返修更新",
+                                "timestamp": datetime.now().isoformat(),
+                                "metadata": {
+                                    "chapter_number": data.get("chapter_number"),
+                                    "content": data.get("content") or "",
+                                    "word_count": len(str(data.get("content") or "")),
+                                    "beat_index": data.get("beat_index", 0),
+                                    "event_type": event_type,
+                                    "rewrite_attempts": data.get("rewrite_attempts"),
+                                    "old_length": data.get("old_length"),
+                                    "new_length": data.get("new_length"),
+                                },
+                            }
+                            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
                 terminal_states = {"stopped", "error", "completed"}
                 if novel.autopilot_status.value in terminal_states:
@@ -2512,4 +2550,3 @@ async def debug_all(novel_id: str = None):
         "novel": novel_info,
         "cache_stats": _SHARED_STATE_CACHE.get_stats(),
     }
-
