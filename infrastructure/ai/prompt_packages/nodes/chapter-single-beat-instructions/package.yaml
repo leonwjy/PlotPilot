@@ -21,6 +21,10 @@ variables:
   desc: 本章建议上限字数
   type: string
   required: true
+- name: hard_max_words
+  desc: 本章硬上限提示字数
+  type: string
+  required: false
 - name: focus
   desc: 叙事聚焦点
   type: string
@@ -33,5 +37,10 @@ variables:
   desc: 章节大纲原文
   type: string
   required: true
+- name: density_note
+  desc: 章纲密度提示
+  type: string
+  required: false
+  default: ''
 id: chapter-single-beat-instructions
 sort_order: 35

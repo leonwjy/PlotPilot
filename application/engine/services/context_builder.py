@@ -45,6 +45,9 @@ class Beat:
     scene_goal: str = ""  # 场景目标（从规划阶段继承）
     transition_from_prev: str = ""  # 🔗 从上一节拍如何过渡（对话延续/动作接续/情绪过渡/场景切换）
     location_id: str = ""  # 微观坐标（由 ATG visit_sequence 绑定；无 ATG 时为空）
+    outline_density_mode: str = ""  # 大纲密度：normal / tight / compact
+    outline_event_count: int = 0  # 章纲事件数
+    words_per_event: float = 0.0  # 平均每事件字数
 
     def __post_init__(self):
         if self.expansion_hints is None:
@@ -349,6 +352,20 @@ class ContextBuilder:
             return []
         total_w = sum(max(0.01, float(a.weight)) for a in atoms)
         mode = (plan.provenance or {}).get("mode", "")
+        density = (plan.extensions or {}).get("outline_density") if isinstance(plan.extensions, dict) else {}
+        density_mode = ""
+        event_count = 0
+        words_per_event = 0.0
+        if isinstance(density, dict):
+            density_mode = str(density.get("outline_density_mode") or "").strip()
+            try:
+                event_count = int(density.get("outline_event_count") or 0)
+            except (TypeError, ValueError):
+                event_count = 0
+            try:
+                words_per_event = float(density.get("words_per_event") or 0.0)
+            except (TypeError, ValueError):
+                words_per_event = 0.0
         logger.info(
             "节拍放大器（章前执行计划）：%d 拍，provenance_mode=%s outline≈%d 字，整章目标 %d 字",
             len(atoms),
@@ -387,6 +404,9 @@ class ContextBuilder:
                     scene_goal=intent,
                     transition_from_prev=transition,
                     location_id=location_id,
+                    outline_density_mode=density_mode,
+                    outline_event_count=event_count,
+                    words_per_event=words_per_event,
                 )
             )
         return beats
@@ -473,6 +493,9 @@ class ContextBuilder:
             scene_goal=f"{a.scene_goal or ''} {b.scene_goal or ''}".strip(),
             transition_from_prev=a.transition_from_prev or '',
             location_id=(a.location_id or b.location_id or "").strip(),
+            outline_density_mode=a.outline_density_mode or b.outline_density_mode,
+            outline_event_count=max(a.outline_event_count, b.outline_event_count),
+            words_per_event=max(a.words_per_event, b.words_per_event),
         )
         return beats[:idx] + [merged] + beats[idx + 2:]
 
@@ -902,17 +925,27 @@ class ContextBuilder:
 
         if total_beats == 1:
             target_words = int(beat.target_words or 0)
-            min_words = max(1, int(target_words * 0.82)) if target_words > 0 else 1
-            max_words = max(min_words, int(target_words * 1.12)) if target_words > 0 else 1
+            min_words = max(1, int(target_words * 0.90)) if target_words > 0 else 1
+            max_words = max(min_words, int(target_words * 1.15)) if target_words > 0 else 1
+            hard_max_words = max(max_words, int(target_words * 1.22)) if target_words > 0 else 1
+            density_note = ""
+            if beat.outline_density_mode:
+                density_note = (
+                    f"\n【大纲密度提示】当前章纲密度：{beat.outline_density_mode}。"
+                    f"事件数约 {beat.outline_event_count}，平均每事件约 {beat.words_per_event:.0f} 字。"
+                    "若事件较密，请用短路径补完关键事件，不要把字数继续膨胀到超出目标太多。"
+                )
             rendered = registry.render(
                 CHAPTER_SINGLE_BEAT_INSTRUCTIONS,
                 variables={
                     "target_words": target_words,
                     "min_words": min_words,
                     "max_words": max_words,
+                    "hard_max_words": hard_max_words,
                     "focus": beat.focus,
                     "description": beat.description,
                     "outline": beat.scene_goal or beat.description,
+                    "density_note": density_note,
                 },
             )
             return (rendered.user if rendered else "") or beat.description

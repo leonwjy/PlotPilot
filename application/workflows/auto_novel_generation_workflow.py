@@ -1520,22 +1520,26 @@ class AutoNovelGenerationWorkflow:
         prior_in_chapter = format_prior_draft_for_prompt(chapter_draft_so_far)
         # 字数控制：像小说家一样自然收束，而非粗暴截断
         if beat_target_words:
-            min_words = max(1, int(beat_target_words * 0.82))
-            max_words = max(min_words, int(beat_target_words * 1.12))
+            min_words = max(1, int(beat_target_words * 0.90))
+            max_words = max(min_words, int(beat_target_words * 1.15))
+            hard_max_words = max(max_words, int(beat_target_words * 1.22))
             length_rule = (
-                f"7. 【字数边界】本节拍目标 {beat_target_words} 字，建议区间 {min_words}-{max_words} 字。"
-                f"接近 {max_words} 字必须收束到本节拍结果，不得继续铺陈环境、重复震惊或追加旁枝对白；"
-                f"收束用完整句，不要戛然而止。"
+                f"7. 【字数与大纲双重边界】本节拍目标 {beat_target_words} 字，理想区间 {min_words}-{max_words} 字，"
+                f"硬上限约 {hard_max_words} 字。收束前必须确认节拍/章纲关键事件已落地。"
+                f"若接近 {max_words} 字但事件未完：进入压缩完成模式，只用一个动作、一句对白或一个结果补完剩余事件，"
+                f"禁止新增铺陈、重复震惊、旁枝对白或新的解释段。若事件已完但字数不足，可正常收束，"
+                f"不要用氛围词、形容词或重复反应凑字。接近硬上限必须尽快用完整句落地结果并收住。"
             )
         elif beat_mode:
             length_rule = "7. 按下方节拍说明控制篇幅，勿写章节标题"
         elif chapter_target_words:
-            min_words = max(1, int(chapter_target_words * 0.82))
-            max_words = max(min_words, int(chapter_target_words * 1.12))
+            min_words = max(1, int(chapter_target_words * 0.90))
+            max_words = max(min_words, int(chapter_target_words * 1.15))
+            hard_max_words = max(max_words, int(chapter_target_words * 1.22))
             length_rule = (
-                f"7. 【章节字数边界】本章目标 {chapter_target_words} 字，建议区间 {min_words}-{max_words} 字。"
-                f"完整覆盖下方大纲的所有要点即可；接近上限必须收束，禁止重复情节水字；"
-                f"用完整句收束，不要戛然而止。"
+                f"7. 【章节字数与大纲边界】本章目标 {chapter_target_words} 字，理想区间 {min_words}-{max_words} 字，"
+                f"硬上限约 {hard_max_words} 字。收束前必须确认大纲关键事件已落地；"
+                f"若字数接近上限但大纲未完，只能短路径补完剩余事件，补完即收，禁止继续铺陈。"
             )
         else:
             length_rule = "7. 章节长度：3000-4000字"

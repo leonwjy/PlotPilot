@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 # 与 ContextBuilder.MAX_BEATS 对齐，避免 DAG 规划与 magnify 脱节
 _MAX_ATOMS = 8
 
+_DENSITY_TIGHT_WORDS_PER_EVENT = 450
+_DENSITY_COMPACT_WORDS_PER_EVENT = 350
+
 
 def _resolve_llm_service(llm_service: Any = None) -> Any:
     """使用注入的 LLM 实现；未传入时走 ``get_llm_service()``（与守护进程 / API 同源）。"""
@@ -118,6 +121,44 @@ class _LLMDecomposeModel(BaseModel):
 def outline_fingerprint(outline: str) -> str:
     raw = (outline or "").strip().encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def estimate_outline_density(outline: str, target_words: int) -> Dict[str, Any]:
+    """估算章纲事件密度，用于提示生成层压缩覆盖而不是擅自扩字。"""
+    text = (outline or "").strip()
+    if not text:
+        event_count = 0
+    else:
+        markers = re.findall(r"(?m)^\s*(?:\d+[\.、．\)]|[-*•])\s*\S", text)
+        if markers:
+            event_count = len(markers)
+        else:
+            segments = segment_structured_outline(text)
+            event_count = len(segments) if segments else 1
+
+    safe_target = max(1, int(target_words or 0))
+    safe_event_count = max(1, event_count)
+    words_per_event = safe_target / safe_event_count
+    if words_per_event < _DENSITY_COMPACT_WORDS_PER_EVENT:
+        mode = "compact"
+    elif words_per_event < _DENSITY_TIGHT_WORDS_PER_EVENT:
+        mode = "tight"
+    else:
+        mode = "normal"
+
+    warning = ""
+    if mode != "normal":
+        warning = (
+            f"大纲密度偏高：{safe_event_count} 个事件 / {safe_target} 字目标 "
+            f"= 每事件约 {words_per_event:.0f} 字；生成时应短路径覆盖，不应大幅超写。"
+        )
+
+    return {
+        "outline_event_count": safe_event_count,
+        "words_per_event": round(words_per_event, 1),
+        "outline_density_mode": mode,
+        "outline_density_warning": warning,
+    }
 
 
 def segment_structured_outline(outline: str) -> Optional[List[str]]:
@@ -467,5 +508,27 @@ async def build_chapter_execution_plan_async(
         atoms = [fallback_single_beat_atom(raw)]
         mode = "fallback_single"
 
-    provenance = {**prov, "mode": mode, "partition_mode": mode_pref, "atom_count": len(atoms)}
-    return ChapterExecutionPlan(envelope=env, atoms=atoms, provenance=provenance)
+    density = estimate_outline_density(raw, target_chapter_words)
+    if density.get("outline_density_warning"):
+        logger.warning("%s", density["outline_density_warning"])
+
+    for atom in atoms:
+        ext = dict(atom.extensions or {})
+        ext.setdefault("outline_density_mode", density["outline_density_mode"])
+        ext.setdefault("outline_event_count", density["outline_event_count"])
+        ext.setdefault("words_per_event", density["words_per_event"])
+        atom.extensions = ext
+
+    provenance = {
+        **prov,
+        "mode": mode,
+        "partition_mode": mode_pref,
+        "atom_count": len(atoms),
+        **density,
+    }
+    return ChapterExecutionPlan(
+        envelope=env,
+        atoms=atoms,
+        extensions={"outline_density": density},
+        provenance=provenance,
+    )

@@ -1949,7 +1949,8 @@ class AutopilotDaemon:
                         voice_anchors=voice_anchors,
                         chapter_draft_so_far=accumulated_content,
                     )
-                    max_tokens = int(adjusted_target * 1.12)  # 贴近字数上限，减少整章过写
+                    token_multiplier = 1.35 if len(beats) == 1 else 1.18
+                    max_tokens = int(adjusted_target * token_multiplier)
                     cfg = GenerationConfig(max_tokens=max_tokens, temperature=0.85)
                     beat_content = await self._stream_llm_with_stop_watch(prompt, cfg, novel=novel)
                 else:
