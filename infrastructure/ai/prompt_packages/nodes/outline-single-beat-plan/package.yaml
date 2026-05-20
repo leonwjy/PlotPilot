@@ -1,0 +1,22 @@
+name: 单节拍章前计划
+category: planning
+source: application/engine/dag/plan/outline_beat_planner.py
+description: 将章节大纲收束为一个整章执行 atom，用于单节拍整章扩写；规则由 CPMS 维护，避免多节拍碎片化
+builtin: true
+tags:
+- 规划
+- 单节拍
+- DAG
+- JSON输出
+output_format: json
+variables:
+- name: outline
+  desc: 章节大纲原文
+  type: string
+  required: true
+- name: target_chapter_words
+  desc: 本章目标字数
+  type: string
+  required: true
+id: outline-single-beat-plan
+sort_order: 18

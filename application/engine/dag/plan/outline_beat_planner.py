@@ -18,6 +18,12 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
 from pydantic import BaseModel, Field
 
 from application.engine.dag.plan.schema import ChapterExecutionPlan, PlanningEnvelope, PlanAtomSpec
+from domain.novel.value_objects.generation_preferences import (
+    OUTLINE_PARTITION_MODE_AUTO,
+    OUTLINE_PARTITION_MODE_BEAT_SHEET,
+    OUTLINE_PARTITION_MODE_SINGLE,
+    OUTLINE_PARTITION_MODES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +69,41 @@ def render_cpms_outline_partition_prompts(
         logger.warning(
             "CPMS %s 渲染失败或 user 为空；无法 LLM 拆节拍",
             OUTLINE_BEAT_PARTITION,
+        )
+        return "", ""
+    return (res.system or "").strip(), (res.user or "").strip()
+
+
+def _normalize_partition_mode(mode: Optional[str]) -> str:
+    raw = str(mode or OUTLINE_PARTITION_MODE_SINGLE).strip()
+    return raw if raw in OUTLINE_PARTITION_MODES else OUTLINE_PARTITION_MODE_SINGLE
+
+
+def render_cpms_single_beat_plan_prompts(
+    outline: str,
+    target_chapter_words: int,
+) -> tuple[str, str]:
+    """从 CPMS 节点 ``outline-single-beat-plan`` 渲染单节拍章前计划提示词。"""
+    from infrastructure.ai.prompt_keys import OUTLINE_SINGLE_BEAT_PLAN
+    from infrastructure.ai.prompt_manager import get_prompt_manager
+    from infrastructure.ai.prompt_registry import get_prompt_registry
+
+    try:
+        get_prompt_manager().ensure_seeded()
+    except Exception as e:
+        logger.warning("ensure_seeded 失败（单节拍章前计划）: %s", e)
+
+    res = get_prompt_registry().render(
+        OUTLINE_SINGLE_BEAT_PLAN,
+        {
+            "outline": (outline or "").strip(),
+            "target_chapter_words": str(int(target_chapter_words)),
+        },
+    )
+    if not res or not (res.user or "").strip():
+        logger.warning(
+            "CPMS %s 渲染失败或 user 为空；无法 LLM 生成单节拍计划",
+            OUTLINE_SINGLE_BEAT_PLAN,
         )
         return "", ""
     return (res.system or "").strip(), (res.user or "").strip()
@@ -300,6 +341,46 @@ async def llm_decompose_outline(
         return None
 
 
+async def llm_single_beat_plan(
+    outline: str,
+    target_words: int,
+    *,
+    emit_delta: OutlinePartitionEmitDelta = None,
+    llm_service: Any = None,
+) -> Optional[List[PlanAtomSpec]]:
+    """调用 CPMS ``outline-single-beat-plan`` 生成单 atom 章前计划。"""
+    system, user = render_cpms_single_beat_plan_prompts(outline, target_words)
+    if not user:
+        return None
+    atoms = await llm_decompose_outline(
+        outline,
+        target_words,
+        system=system,
+        user=user,
+        emit_delta=emit_delta,
+        llm_service=llm_service,
+    )
+    if not atoms:
+        return None
+    first = atoms[0]
+    first.id = "b1"
+    first.weight = 1.0
+    ext = dict(first.extensions or {})
+    ext["decomposition_mode"] = "single_beat_cpms"
+    first.extensions = ext
+    return [first]
+
+
+def fallback_single_beat_atom(outline: str) -> PlanAtomSpec:
+    """CPMS/LLM 不可用时的结构兜底；文案规则仍由正常路径的 CPMS 节点承担。"""
+    return PlanAtomSpec(
+        id="b1",
+        intent=(outline or "").strip(),
+        weight=1.0,
+        extensions={"decomposition_mode": "fallback_single"},
+    )
+
+
 async def build_chapter_execution_plan_async(
     outline: str,
     *,
@@ -313,9 +394,11 @@ async def build_chapter_execution_plan_async(
     decomposition_label: str = "planning_outline_partition",
     emit_llm_delta: OutlinePartitionEmitDelta = None,
     llm_service: Any = None,
+    partition_mode: str = OUTLINE_PARTITION_MODE_SINGLE,
 ) -> ChapterExecutionPlan:
     """构建章前执行计划。LLM 默认经 CPMS outline-beat-partition；可传 llm_system / llm_user 覆写。"""
     raw = (outline or "").strip()
+    mode_pref = _normalize_partition_mode(partition_mode)
     env = PlanningEnvelope(
         novel_id=novel_id,
         chapter_number=chapter_number,
@@ -330,19 +413,44 @@ async def build_chapter_execution_plan_async(
     if not raw:
         return ChapterExecutionPlan(envelope=env, atoms=[], provenance={**prov, "mode": "empty_outline"})
 
-    if beat_sheet_json and isinstance(beat_sheet_json, dict):
+    if mode_pref == OUTLINE_PARTITION_MODE_SINGLE:
+        atoms = await llm_single_beat_plan(
+            raw,
+            target_chapter_words,
+            emit_delta=emit_llm_delta,
+            llm_service=llm_service,
+        )
+        if atoms:
+            mode = "single_beat_cpms"
+        else:
+            atoms = [fallback_single_beat_atom(raw)]
+            mode = "fallback_single"
+
+    if atoms is None and beat_sheet_json and isinstance(beat_sheet_json, dict):
         atoms = atoms_from_beat_sheet_dict(beat_sheet_json)
         if atoms:
             mode = "beat_sheet"
+        elif mode_pref == OUTLINE_PARTITION_MODE_BEAT_SHEET:
+            atoms = await llm_single_beat_plan(
+                raw,
+                target_chapter_words,
+                emit_delta=emit_llm_delta,
+                llm_service=llm_service,
+            )
+            if atoms:
+                mode = "single_beat_cpms"
+            else:
+                atoms = [fallback_single_beat_atom(raw)]
+                mode = "fallback_single"
 
     structured: Optional[List[str]] = None
-    if atoms is None:
+    if atoms is None and mode_pref == OUTLINE_PARTITION_MODE_AUTO:
         structured = segment_structured_outline(raw)
         if structured:
             atoms = atoms_from_segments(structured)
             mode = "structured_outline"
 
-    if atoms is None and use_llm:
+    if atoms is None and mode_pref == OUTLINE_PARTITION_MODE_AUTO and use_llm:
         llm_atoms = await llm_decompose_outline(
             raw,
             target_chapter_words,
@@ -356,15 +464,8 @@ async def build_chapter_execution_plan_async(
             mode = "llm_outline_decompose"
 
     if atoms is None:
-        atoms = [
-            PlanAtomSpec(
-                id="b1",
-                intent=raw,
-                weight=1.0,
-                extensions={"decomposition_mode": "fallback_single"},
-            )
-        ]
+        atoms = [fallback_single_beat_atom(raw)]
         mode = "fallback_single"
 
-    provenance = {**prov, "mode": mode, "atom_count": len(atoms)}
+    provenance = {**prov, "mode": mode, "partition_mode": mode_pref, "atom_count": len(atoms)}
     return ChapterExecutionPlan(envelope=env, atoms=atoms, provenance=provenance)

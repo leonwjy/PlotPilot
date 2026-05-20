@@ -1,0 +1,37 @@
+name: 整章单节拍写作指令
+category: generation
+source: application/engine/services/context_builder.py::build_beat_prompt()
+description: 单节拍模式下的整章扩写指令；替代多节拍 beat-focus-instructions，避免模型误以为只写章节片段
+builtin: true
+tags:
+- 生成
+- 单节拍
+- 整章扩写
+- 去AI味
+variables:
+- name: target_words
+  desc: 本章目标字数
+  type: string
+  required: true
+- name: min_words
+  desc: 本章建议下限字数
+  type: string
+  required: true
+- name: max_words
+  desc: 本章建议上限字数
+  type: string
+  required: true
+- name: focus
+  desc: 叙事聚焦点
+  type: string
+  required: false
+- name: description
+  desc: 单节拍整章执行任务
+  type: string
+  required: true
+- name: outline
+  desc: 章节大纲原文
+  type: string
+  required: true
+id: chapter-single-beat-instructions
+sort_order: 35

@@ -54,6 +54,13 @@ class PlanningOutlinePartitionNode(AbstractPlanningNode):
                 default=True,
                 description="无章纲结构与 BeatSheet 时是否调用 LLM 分解（经 CPMS 渲染提示词）",
             ),
+            NodePort(
+                name="partition_mode",
+                data_type=PortDataType.TEXT,
+                required=False,
+                default="single",
+                description="章纲划分模式：single=整章单节拍；auto=旧多节拍自动拆分；beat_sheet=优先 BeatSheet",
+            ),
         ],
         output_ports=[
             NodePort(
@@ -110,6 +117,7 @@ class PlanningOutlinePartitionNode(AbstractPlanningNode):
 
         use_llm = inputs.get("use_llm")
         use_llm_bool = True if use_llm is None else bool(use_llm)
+        partition_mode = str(inputs.get("partition_mode") or "single").strip()
 
         novel_id = context.get("novel_id") if isinstance(context, dict) else None
         chapter_number = context.get("chapter_number") if isinstance(context, dict) else None
@@ -125,6 +133,7 @@ class PlanningOutlinePartitionNode(AbstractPlanningNode):
                 beat_sheet_json=beat_sheet_json,
                 use_llm=use_llm_bool,
                 decomposition_label="planning_outline_partition",
+                partition_mode=partition_mode,
             )
 
             duration_ms = int((time.perf_counter() - started) * 1000)

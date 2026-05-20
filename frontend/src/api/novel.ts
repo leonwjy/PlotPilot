@@ -29,6 +29,7 @@ function pickString(raw: Record<string, unknown>, keys: string[], fallback = '')
 
 /** 与后端 novels.generation_prefs_json 一致（按需扩展） */
 export interface GenerationPrefsDTO {
+  outline_partition_mode?: 'single' | 'auto' | 'beat_sheet'
   phase_display_mode?: boolean
   smart_truncate_enabled?: boolean
   beat_hard_cap_enabled?: boolean

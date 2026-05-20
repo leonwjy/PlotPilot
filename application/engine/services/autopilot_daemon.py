@@ -1630,6 +1630,11 @@ class AutopilotDaemon:
                     use_llm=True,
                     emit_llm_delta=_emit_outline_planning_delta,
                     llm_service=self.llm_service,
+                    partition_mode=getattr(
+                        novel.generation_prefs,
+                        "outline_partition_mode",
+                        "single",
+                    ),
                 )
             except Exception as e:
                 logger.warning(
@@ -1839,7 +1844,10 @@ class AutopilotDaemon:
 
                 # 获取指挥信号（铺陈/收束/着陆）——须在共享状态写入前取得，供遥测字段使用
                 signal = conductor.get_signal(i)
-                if not novel.generation_prefs.beat_hard_cap_enabled:
+                single_partition_mode = (
+                    getattr(novel.generation_prefs, "outline_partition_mode", "single") == "single"
+                )
+                if single_partition_mode or not novel.generation_prefs.beat_hard_cap_enabled:
                     signal = replace(signal, hard_cap=0)
 
                 # 🔥 节拍开始前，立即更新共享状态（前端实时看到当前节拍）
@@ -1941,7 +1949,7 @@ class AutopilotDaemon:
                         voice_anchors=voice_anchors,
                         chapter_draft_so_far=accumulated_content,
                     )
-                    max_tokens = int(adjusted_target * 1.3)  # 使用调整后的目标
+                    max_tokens = int(adjusted_target * 1.12)  # 贴近字数上限，减少整章过写
                     cfg = GenerationConfig(max_tokens=max_tokens, temperature=0.85)
                     beat_content = await self._stream_llm_with_stop_watch(prompt, cfg, novel=novel)
                 else:
@@ -4178,4 +4186,3 @@ class AutopilotDaemon:
         
         except Exception as e:
             logger.warning(f"[{novel.novel_id}] 摘要生成失败: {e}")
-

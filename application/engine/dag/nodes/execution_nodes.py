@@ -303,6 +303,13 @@ class BeatNode(BaseNode):
                 default=None,
                 description="可选 BeatSheet JSON；无上游 plan 时传入 build_chapter_execution_plan_async",
             ),
+            NodePort(
+                name="partition_mode",
+                data_type=PortDataType.TEXT,
+                required=False,
+                default="single",
+                description="章纲划分模式：single=整章单节拍；auto=旧多节拍自动拆分；beat_sheet=优先 BeatSheet",
+            ),
         ],
         output_ports=[
             NodePort(name="beats", data_type=PortDataType.LIST),
@@ -337,6 +344,7 @@ class BeatNode(BaseNode):
             except (TypeError, ValueError):
                 tw = 2500
             nid = context.get("novel_id") if isinstance(context, dict) else None
+            partition_mode = str(inputs.get("partition_mode") or context.get("partition_mode") or "single").strip()
 
             sheet = inputs.get("beat_sheet_json")
             beat_sheet_json: Optional[Dict[str, Any]] = None
@@ -378,6 +386,7 @@ class BeatNode(BaseNode):
                                 chapter_number=chap,
                                 beat_sheet_json=beat_sheet_json,
                                 use_llm=True,
+                                partition_mode=partition_mode,
                             )
                         except Exception as plan_err:
                             logger.warning("章前执行计划（exec_beat）失败：%s", plan_err)

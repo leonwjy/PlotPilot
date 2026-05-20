@@ -12,8 +12,26 @@ def build_prose_discipline_block(
     *,
     beat_mode: bool = False,
     beat_target_words: Optional[int] = None,
+    partition_mode: str = "",
 ) -> str:
     """组装注入 system 的戒律段落（中文）。"""
+    try:
+        from infrastructure.ai.prompt_keys import CHAPTER_PROSE_DISCIPLINE
+        from infrastructure.ai.prompt_registry import get_prompt_registry
+
+        rendered = get_prompt_registry().render(
+            CHAPTER_PROSE_DISCIPLINE,
+            {
+                "beat_mode": "true" if beat_mode else "false",
+                "beat_target_words": "" if beat_target_words is None else str(beat_target_words),
+                "partition_mode": partition_mode or "",
+            },
+        )
+        if rendered and (rendered.user or "").strip():
+            return rendered.user.strip()
+    except Exception:
+        pass
+
     lines = [
         "━━━ 行文戒律（反八股 / 控水分）━━━",
         "",

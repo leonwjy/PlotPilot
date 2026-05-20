@@ -643,6 +643,7 @@ class AutoNovelGenerationWorkflow:
                 target_words,
                 beat_sheet=None,
                 scene_director=scene_director,
+                partition_mode="single",
             )
             logger.info(f"  ✓ 已拆分为 {len(beats)} 个微观节拍（整章目标 {target_words} 字）")
         
@@ -849,6 +850,7 @@ class AutoNovelGenerationWorkflow:
         beat_sheet: Optional[Any] = None,
         scene_director: Optional[SceneDirectorAnalysis] = None,
         emit_llm_delta: Optional[Callable[[str], Awaitable[None]]] = None,
+        partition_mode: str = "single",
     ) -> List[Any]:
         """章纲拆节拍：经 ``build_chapter_execution_plan_async``（与 DAG planning_outline_partition 同源）再投影为 Beat。"""
         from application.engine.dag.plan.outline_beat_planner import (
@@ -883,6 +885,7 @@ class AutoNovelGenerationWorkflow:
                 use_llm=True,
                 emit_llm_delta=emit_llm_delta,
                 llm_service=self.llm_service,
+                partition_mode=partition_mode,
             )
         except Exception as e:
             logger.warning("章前执行计划（拆节拍）失败，降级：%s", e)
@@ -962,6 +965,7 @@ class AutoNovelGenerationWorkflow:
                         beat_sheet=None,
                         scene_director=scene_director,
                         emit_llm_delta=emit_outline_partition,
+                        partition_mode="single",
                     )
                 )
 
@@ -1516,17 +1520,21 @@ class AutoNovelGenerationWorkflow:
         prior_in_chapter = format_prior_draft_for_prompt(chapter_draft_so_far)
         # 字数控制：像小说家一样自然收束，而非粗暴截断
         if beat_target_words:
+            min_words = max(1, int(beat_target_words * 0.82))
+            max_words = max(min_words, int(beat_target_words * 1.12))
             length_rule = (
-                f"7. 【字数指引】本节拍约 {beat_target_words} 字。"
-                f"用有信息的对话、动作与因果推进填到目标附近，禁止为凑字重复描写同一致震撼或同一情绪；"
+                f"7. 【字数边界】本节拍目标 {beat_target_words} 字，建议区间 {min_words}-{max_words} 字。"
+                f"接近 {max_words} 字必须收束到本节拍结果，不得继续铺陈环境、重复震惊或追加旁枝对白；"
                 f"收束用完整句，不要戛然而止。"
             )
         elif beat_mode:
             length_rule = "7. 按下方节拍说明控制篇幅，勿写章节标题"
         elif chapter_target_words:
+            min_words = max(1, int(chapter_target_words * 0.82))
+            max_words = max(min_words, int(chapter_target_words * 1.12))
             length_rule = (
-                f"7. 【章节字数指引】本章目标约 {chapter_target_words} 字。"
-                f"完整覆盖下方大纲的所有要点，字数不足时优先补充对话与场景细节，禁止重复情节水字；"
+                f"7. 【章节字数边界】本章目标 {chapter_target_words} 字，建议区间 {min_words}-{max_words} 字。"
+                f"完整覆盖下方大纲的所有要点即可；接近上限必须收束，禁止重复情节水字；"
                 f"用完整句收束，不要戛然而止。"
             )
         else:
@@ -1599,6 +1607,7 @@ class AutoNovelGenerationWorkflow:
         prose_discipline = build_prose_discipline_block(
             beat_mode=beat_mode,
             beat_target_words=beat_target_words,
+            partition_mode="single" if total_beats == 1 else "auto",
         )
 
         # ⚡ 提示词集中管理说明：

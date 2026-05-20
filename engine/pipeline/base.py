@@ -350,7 +350,7 @@ class BaseStoryPipeline(ABC):
             try:
                 from domain.ai.services.llm_service import GenerationConfig
                 target = getattr(beat, 'target_words', ctx.target_word_count // max(len(ctx.beats), 1))
-                max_tokens = int(target * 1.3)
+                max_tokens = int(target * 1.12)
                 cfg = GenerationConfig(max_tokens=max_tokens, temperature=0.85)
 
                 result = await ctx.llm_service.generate(

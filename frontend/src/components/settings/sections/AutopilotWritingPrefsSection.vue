@@ -33,6 +33,24 @@
 
             <div class="row">
               <div class="row-label">
+                <span class="row-title">章纲划分模式</span>
+                <n-text depth="3" class="row-hint">
+                  默认单节拍：章纲先收束为一个整章执行任务，再一次性扩写完整章节；多节拍保留为实验模式。
+                </n-text>
+              </div>
+              <n-select
+                class="mode-select"
+                :value="outlinePartitionMode"
+                :options="outlinePartitionModeOptions"
+                :loading="patching === 'outline_partition_mode'"
+                @update:value="onOutlinePartitionMode"
+              />
+            </div>
+
+            <n-divider class="inner-divider" />
+
+            <div class="row">
+              <div class="row-label">
                 <span class="row-title">节拍字数硬帽</span>
                 <n-text depth="3" class="row-hint">
                   开启时由指挥器计算每节拍 <span class="mono">hard_cap</span>；超出时可截断。关闭后不再施加硬帽与截断安全网。
@@ -234,6 +252,12 @@ const savingConductor = ref(false)
 
 const smartTruncate = ref(false)
 const beatHardCap = ref(true)
+const outlinePartitionMode = ref<NonNullable<GenerationPrefsDTO['outline_partition_mode']>>('single')
+const outlinePartitionModeOptions = [
+  { label: '单节拍整章扩写', value: 'single' },
+  { label: '自动多节拍', value: 'auto' },
+  { label: '优先 BeatSheet', value: 'beat_sheet' },
+] as const
 
 const pauseAfterEachAudit = ref(false)
 const auditPauseOnHardFail = ref(false)
@@ -252,6 +276,10 @@ function applyPrefs(p?: GenerationPrefsDTO | null) {
   beatHardCap.value = Object.prototype.hasOwnProperty.call(p2, 'beat_hard_cap_enabled')
     ? Boolean(p2.beat_hard_cap_enabled)
     : true
+  outlinePartitionMode.value =
+    p2.outline_partition_mode === 'auto' || p2.outline_partition_mode === 'beat_sheet'
+      ? p2.outline_partition_mode
+      : 'single'
 
   pauseAfterEachAudit.value = Boolean(p2.pause_after_each_chapter_audit)
   auditPauseOnHardFail.value = Boolean(p2.audit_pause_on_hard_fail)
@@ -354,6 +382,21 @@ async function onBoolPref(
   patching.value = key
   try {
     await mergePrefs({ [key]: value })
+    message.success('已保存')
+  } catch (e) {
+    message.error(e instanceof Error ? e.message : '保存失败')
+    await loadNovel()
+  } finally {
+    patching.value = null
+  }
+}
+
+async function onOutlinePartitionMode(value: NonNullable<GenerationPrefsDTO['outline_partition_mode']>) {
+  const slug = novelSlug.value
+  if (!slug) return
+  patching.value = 'outline_partition_mode'
+  try {
+    await mergePrefs({ outline_partition_mode: value })
     message.success('已保存')
   } catch (e) {
     message.error(e instanceof Error ? e.message : '保存失败')
@@ -560,6 +603,10 @@ watch(
 .field-input {
   width: 100%;
   max-width: 280px;
+}
+
+.mode-select {
+  width: 180px;
 }
 
 .conductor-error {

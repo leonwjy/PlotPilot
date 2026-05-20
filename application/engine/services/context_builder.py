@@ -895,9 +895,27 @@ class ContextBuilder:
 
     def build_beat_prompt(self, beat: Beat, beat_index: int, total_beats: int) -> str:
         """构建单个节拍的生成提示（指令从 CPMS beat-focus-instructions 读取）"""
+        from infrastructure.ai.prompt_keys import CHAPTER_SINGLE_BEAT_INSTRUCTIONS
         from infrastructure.ai.prompt_registry import get_prompt_registry
 
         registry = get_prompt_registry()
+
+        if total_beats == 1:
+            target_words = int(beat.target_words or 0)
+            min_words = max(1, int(target_words * 0.82)) if target_words > 0 else 1
+            max_words = max(min_words, int(target_words * 1.12)) if target_words > 0 else 1
+            rendered = registry.render(
+                CHAPTER_SINGLE_BEAT_INSTRUCTIONS,
+                variables={
+                    "target_words": target_words,
+                    "min_words": min_words,
+                    "max_words": max_words,
+                    "focus": beat.focus,
+                    "description": beat.description,
+                    "outline": beat.scene_goal or beat.description,
+                },
+            )
+            return (rendered.user if rendered else "") or beat.description
 
         # 聚焦指令字典
         focus_instructions = registry.get_directives_dict(self._BEAT_PROMPT_ID, "_focus_instructions")

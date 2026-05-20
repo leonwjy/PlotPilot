@@ -1,0 +1,25 @@
+name: 章节行文戒律
+category: generation
+source: application/workflows/prose_discipline.py::build_prose_discipline_block()
+description: 章节正文反八股、控水分、去 AI 味规则；由 CPMS 维护，供主工作流注入 system prompt
+builtin: true
+tags:
+- 生成
+- 去AI味
+- 反八股
+- 控水分
+variables:
+- name: beat_mode
+  desc: 是否处于节拍模式
+  type: string
+  required: false
+- name: beat_target_words
+  desc: 当前节拍目标字数
+  type: string
+  required: false
+- name: partition_mode
+  desc: 章纲划分模式
+  type: string
+  required: false
+id: chapter-prose-discipline
+sort_order: 36

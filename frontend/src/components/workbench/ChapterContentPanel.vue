@@ -186,9 +186,9 @@ const props = withDefaults(
     assistStreamBeatSession?: { chapterNumber: number; beats: StreamGeneratedBeat[] } | null
     /** 对应章节流式生成失败时，微观区才用章纲拆条兜底 */
     assistStreamFailedChapter?: number | null
-    /** 流式完成但章前拆拍失败/降级（≤1 拍） */
+    /** 流式完成但章前拆拍失败（无真实指挥器节拍） */
     assistStreamPlanFailedChapter?: number | null
-    /** 全托管正在写的本章且 total_beats≤1（规划已结束并降级） */
+    /** 全托管正在写的本章但未拿到真实指挥器节拍 */
     autopilotOutlinePlanFailed?: boolean
     /** 最近一次流式生成完成的章号（无微观节拍时用于提示） */
     assistStreamCompletedChapter?: number | null
@@ -361,7 +361,7 @@ function outlineFallbackMicroBeats(): MicroBeat[] {
   }))
 }
 
-/** 落库 micro_beats → 流式 SSE；不足时章纲拆条预览（与宏观叙事条分离） */
+/** 落库 micro_beats → 流式 SSE；失败时章纲拆条预览（与宏观叙事条分离） */
 function conductorMicroBeatsForChapter(ch: number): MicroBeat[] {
   const k = knowledgeChapter.value
   if (k?.micro_beats && Array.isArray(k.micro_beats) && k.micro_beats.length > 0) {
@@ -397,10 +397,7 @@ const microBeats = computed<MicroBeat[]>(() => {
   const outlinePreview = outlineFallbackMicroBeats()
   const planFailed = isOutlinePlanFailedForChapter(ch)
 
-  if (conductor.length > 1) return conductor
-
-  if (planFailed && outlinePreview.length > 1) return outlinePreview
-
+  // 单节拍整章模式也是有效的指挥器结果，不能被章纲拆条预览覆盖。
   if (conductor.length >= 1) return conductor
 
   if (planFailed && outlinePreview.length) return outlinePreview

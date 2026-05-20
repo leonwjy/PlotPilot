@@ -38,6 +38,8 @@ CHAPTER_SUMMARIZER = "chapter-summarizer"
 CHAPTER_BRIDGE_EXTRACT = "chapter-bridge-extract"
 CHAPTER_BRIDGE_CHECK = "chapter-bridge-check"
 CHAPTER_BRIDGE_FIX = "chapter-bridge-fix"
+CHAPTER_SINGLE_BEAT_INSTRUCTIONS = "chapter-single-beat-instructions"
+CHAPTER_PROSE_DISCIPLINE = "chapter-prose-discipline"
 
 # ── Scene ────────────────────────────────────────────────────────────────
 SCENE_GENERATION = "scene-generation"
@@ -65,6 +67,7 @@ PLANNING_QUICK_MACRO = "planning-quick-macro"
 PLANNING_ACT = "planning-act"
 PLANNING_MAIN_PLOT_SUGGEST = "planning-main-plot-suggest"
 OUTLINE_BEAT_PARTITION = "outline-beat-partition"
+OUTLINE_SINGLE_BEAT_PLAN = "outline-single-beat-plan"
 
 # ── Style / Voice ────────────────────────────────────────────────────────
 STYLE_ANALYSIS = "style-analysis"
@@ -122,6 +125,7 @@ ALL_KEYS: frozenset[str] = frozenset({
     CHAPTER_GENERATION_MAIN, CHAPTER_GENERATION_BASIC,
     CHAPTER_NARRATIVE_SYNC, CHAPTER_STATE_EXTRACTION, CHAPTER_SUMMARIZER,
     CHAPTER_BRIDGE_EXTRACT, CHAPTER_BRIDGE_CHECK, CHAPTER_BRIDGE_FIX,
+    CHAPTER_SINGLE_BEAT_INSTRUCTIONS, CHAPTER_PROSE_DISCIPLINE,
     # Scene
     SCENE_GENERATION, SCENE_DIRECTOR, BEAT_SHEET_DECOMPOSITION,
     # Dialogue
@@ -136,7 +140,7 @@ ALL_KEYS: frozenset[str] = frozenset({
     MEMORY_EXTRACTION,
     # Planning
     PLANNING_QUICK_MACRO, PLANNING_ACT, PLANNING_MAIN_PLOT_SUGGEST,
-    OUTLINE_BEAT_PARTITION,
+    OUTLINE_BEAT_PARTITION, OUTLINE_SINGLE_BEAT_PLAN,
     # Style
     STYLE_ANALYSIS, VOICE_STYLE_ANALYSIS, VOICE_BASELINE_ANALYSIS,
     VOICE_REWRITE,

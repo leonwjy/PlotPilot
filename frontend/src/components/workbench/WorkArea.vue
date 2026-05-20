@@ -810,10 +810,10 @@ const streamStats = ref({ chars: 0, estimated_tokens: 0, chunks: 0 })
 const assistStreamBeatSession = ref<{ chapterNumber: number; beats: StreamGeneratedBeat[] } | null>(null)
 /** 对应章节流式调用失败时，侧栏微观节拍才降级为章纲分条预览 */
 const assistStreamFailedChapter = ref<number | null>(null)
-/** 流式完成但章前拆拍失败或仅 1 拍（降级） */
+/** 流式完成但章前拆拍失败（无真实指挥器节拍） */
 const assistStreamPlanFailedChapter = ref<number | null>(null)
 
-/** 全托管：当前章规划已结束且 total_beats≤1 → 微观区才用章纲拆条 */
+/** 全托管：当前章规划已结束但没有真实指挥器节拍 → 微观区才用章纲拆条 */
 const AUTOPILOT_AFTER_OUTLINE_PLAN_SUBSTEPS = new Set([
   'beat_magnification',
   'llm_calling',
@@ -837,8 +837,8 @@ const autopilotOutlinePlanFailedForRail = computed(() => {
   const sub = String(st.writing_substep ?? '')
   if (!AUTOPILOT_AFTER_OUTLINE_PLAN_SUBSTEPS.has(sub)) return false
   const planned = Array.isArray(st.planned_micro_beats) ? st.planned_micro_beats.length : 0
-  if (planned > 1) return false
-  return Number(st.total_beats ?? 0) <= 1
+  if (planned >= 1) return false
+  return Number(st.total_beats ?? 0) <= 0
 })
 
 /** 全托管章前规划节拍：session 缓存优先，再读 /status planned_micro_beats */
@@ -1836,7 +1836,7 @@ const handleStartGenerate = async () => {
             (assistStreamBeatSession.value?.chapterNumber === targetChapterNumber
               ? assistStreamBeatSession.value.beats.length
               : 0)
-          if (beatCount <= 1) {
+          if (beatCount < 1) {
             assistStreamPlanFailedChapter.value = targetChapterNumber
           } else if (assistStreamPlanFailedChapter.value === targetChapterNumber) {
             assistStreamPlanFailedChapter.value = null
